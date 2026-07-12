@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- CursorRemote is often served over HTTP on LAN / Tailscale. -->
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

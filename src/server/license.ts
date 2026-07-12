@@ -34,6 +34,9 @@ function readStoredKey(): string | null {
 /**
  * Validates the stored license key. No prompting - use scripts/dev-wrapper.ts
  * for interactive dev (prompts before starting tsx watch).
+ *
+ * Personal / unpaid use: allow startup without a key (no paywall).
+ * A valid key still logs the thank-you message when present.
  */
 export function checkLicense(): void {
   const stored = readStoredKey();
@@ -41,8 +44,10 @@ export function checkLicense(): void {
     console.log('[license] Thank you for supporting the project.');
     return;
   }
-  console.error('[license] No valid license key in data/license.key');
-  console.error(`  Get a key: ${STORE_URL}`);
-  console.error('  For dev: run "npm run dev" which prompts before starting.');
-  process.exit(1);
+  if (!stored) {
+    console.log('[license] No license key — running unlocked (personal use).');
+    return;
+  }
+  console.warn('[license] Stored key is invalid — running unlocked (personal use).');
+  console.warn(`  Optional key format / store: ${STORE_URL}`);
 }

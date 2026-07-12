@@ -57,28 +57,7 @@ async function ensureLicense(): Promise<void> {
     console.log('[license] Thank you for supporting the project.');
     return;
   }
-  if (stored && !validateKey(stored)) {
-    console.log('[license] Stored key is invalid. Please enter a new one.');
-  }
-  console.log();
-  console.log('  No valid license key found. Grab a key here:');
-  console.log(`  ${STORE_URL}`);
-  console.log();
-  while (true) {
-    const input = await promptKey();
-    if (!input) {
-      console.log('[license] (Press Ctrl+C to exit)');
-      continue;
-    }
-    if (validateKey(input)) {
-      if (!saveKey(input)) {
-        console.warn('[license] Warning: key may not have saved correctly. If it disappears, re-enter it.');
-      }
-      console.log('[license] Thank you for supporting the project.');
-      return;
-    }
-    console.log('[license] Invalid format. Expected XXXX-XXXX-XXXX-XXXX-XXXX');
-  }
+  console.log('[license] No license key — running unlocked (personal use).');
 }
 
 async function main(): Promise<void> {

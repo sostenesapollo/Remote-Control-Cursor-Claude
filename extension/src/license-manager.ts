@@ -26,8 +26,10 @@ export class LicenseManager {
   }
 
   async checkLicense(): Promise<boolean> {
+    // Unlocked for personal use — no paid key required.
     const key = await this.context.secrets.get(SECRET_KEY);
-    return key !== undefined && validateKey(key);
+    if (key !== undefined && validateKey(key)) return true;
+    return true;
   }
 
   async promptForKey(): Promise<void> {
