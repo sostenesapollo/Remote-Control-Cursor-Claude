@@ -3,7 +3,7 @@ import 'package:webview_flutter/webview_flutter.dart';
 
 import 'agent_webview.dart';
 import 'app_settings.dart';
-import 'cursor_auth.dart';
+import 'onboarding_screen.dart';
 import 'settings_screen.dart';
 
 void main() {
@@ -61,13 +61,8 @@ class _HomeShellState extends State<HomeShell> {
   final _settings = AppSettings();
   var _index = 0;
   var _ready = false;
-  var _cursorConnecting = false;
-  String? _cursorToken;
-  String? _cursorError;
   String? _cursorLoadUrl;
   Map<String, String>? _cursorHeaders;
-  WebViewController? _claudeController;
-  final _tokenInjected = <String>{};
   int _cursorViewKey = 0;
   int _claudeViewKey = 0;
 
@@ -79,82 +74,58 @@ class _HomeShellState extends State<HomeShell> {
 
   Future<void> _bootstrap() async {
     await _settings.load();
+    _applyCursorConfig();
     setState(() => _ready = true);
-    if (_settings.hasCursorConfig) {
-      await _connectCursor();
-    } else {
-      setState(() => _index = 2);
-    }
   }
 
-  Future<void> _connectCursor() async {
-    final uri = _settings.cursorUri;
-    if (uri == null) {
-      setState(() => _cursorError = 'Invalid CursorRemote URL');
-      return;
-    }
-
-    setState(() {
-      _cursorConnecting = true;
-      _cursorError = null;
-      _tokenInjected.clear();
-    });
-
-    final auth = await loginCursorRemote(
-      baseUri: uri,
-      password: _settings.cursorPassword,
-    );
-
-    if (!mounted) return;
-
-    if (!auth.ok || auth.token == null) {
+  void _applyCursorConfig() {
+    if (!_settings.isPaired) {
       setState(() {
-        _cursorConnecting = false;
-        _cursorError = auth.error ?? 'Login failed';
-        _cursorToken = null;
         _cursorLoadUrl = null;
         _cursorHeaders = null;
       });
       return;
     }
-
-    final headers = <String, String>{};
-    if (auth.token != 'no-auth') {
-      headers['Authorization'] = 'Bearer ${auth.token}';
+    final uri = _settings.cursorUri;
+    if (uri == null) {
+      setState(() {
+        _cursorLoadUrl = null;
+        _cursorHeaders = null;
+      });
+      return;
     }
-
+    final headers = <String, String>{
+      'Authorization': 'Bearer ${_settings.cursorToken}',
+    };
+    if (uri.host.contains('ngrok')) {
+      headers['ngrok-skip-browser-warning'] = 'true';
+    }
     setState(() {
-      _cursorConnecting = false;
-      _cursorToken = auth.token;
       _cursorLoadUrl = uri.origin;
-      _cursorHeaders = headers.isEmpty ? null : headers;
+      _cursorHeaders = headers;
       _cursorViewKey++;
     });
   }
 
   Future<void> _onSettingsSaved(AppSettings _) async {
-    setState(() {
-      _claudeViewKey++;
-      _index = 0;
-    });
-    await _connectCursor();
+    setState(() => _claudeViewKey++);
+    _applyCursorConfig();
+    if (_settings.isPaired && _index == 2) {
+      setState(() => _index = 0);
+    }
   }
 
   Future<void> _injectCursorToken(WebViewController c, String url) async {
-    final token = _cursorToken;
-    if (token == null || token == 'no-auth') return;
-    if (_tokenInjected.contains(url)) return;
+    final token = _settings.cursorToken;
+    if (token.isEmpty) return;
 
     final js =
         "localStorage.setItem('cursor-remote-token', ${_jsString(token)});";
     await c.runJavaScript(js);
-    _tokenInjected.add(url);
+  }
 
-    // Reload once so socket.io picks up the token from localStorage.
-    if (!_tokenInjected.contains('$url#reloaded')) {
-      _tokenInjected.add('$url#reloaded');
-      await c.reload();
-    }
+  void _openSettings() {
+    setState(() => _index = 2);
   }
 
   @override
@@ -165,40 +136,26 @@ class _HomeShellState extends State<HomeShell> {
       );
     }
 
+    final isPaired = _settings.isPaired;
+
     return Scaffold(
-      appBar: AppBar(
-        title: Text(_titleFor(_index)),
-        actions: [
-          if (_index == 0)
-            IconButton(
-              tooltip: 'Reload Cursor',
-              onPressed: _cursorConnecting ? null : _connectCursor,
-              icon: const Icon(Icons.refresh),
+      body: SafeArea(
+        child: IndexedStack(
+          index: _index,
+          children: [
+            isPaired ? _buildCursorPane() : OnboardingScreen(onPair: _openSettings),
+            AgentWebView(
+              key: ValueKey('claude-$_claudeViewKey'),
+              url: _settings.claudeUrl.trim().isEmpty
+                  ? 'https://claude.ai/code'
+                  : _settings.claudeUrl.trim(),
             ),
-          if (_index == 1)
-            IconButton(
-              tooltip: 'Reload Claude',
-              onPressed: () => _claudeController?.reload(),
-              icon: const Icon(Icons.refresh),
+            SettingsScreen(
+              settings: _settings,
+              onSaved: _onSettingsSaved,
             ),
-        ],
-      ),
-      body: IndexedStack(
-        index: _index,
-        children: [
-          _buildCursorPane(),
-          AgentWebView(
-            key: ValueKey('claude-$_claudeViewKey'),
-            url: _settings.claudeUrl.trim().isEmpty
-                ? 'https://claude.ai/code'
-                : _settings.claudeUrl.trim(),
-            onControllerReady: (c) => _claudeController = c,
-          ),
-          SettingsScreen(
-            settings: _settings,
-            onSaved: _onSettingsSaved,
-          ),
-        ],
+          ],
+        ),
       ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _index,
@@ -207,7 +164,7 @@ class _HomeShellState extends State<HomeShell> {
           NavigationDestination(
             icon: Icon(Icons.terminal_outlined),
             selectedIcon: Icon(Icons.terminal),
-            label: 'Cursor',
+            label: 'Agent',
           ),
           NavigationDestination(
             icon: Icon(Icons.smart_toy_outlined),
@@ -224,41 +181,7 @@ class _HomeShellState extends State<HomeShell> {
     );
   }
 
-  String _titleFor(int i) => switch (i) {
-        0 => 'Cursor',
-        1 => 'Claude',
-        _ => 'Setup',
-      };
-
   Widget _buildCursorPane() {
-    if (_cursorConnecting) {
-      return const Center(child: CircularProgressIndicator());
-    }
-    if (_cursorError != null) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(Icons.error_outline, size: 48, color: Color(0xFFF85149)),
-              const SizedBox(height: 12),
-              Text(_cursorError!, textAlign: TextAlign.center),
-              const SizedBox(height: 16),
-              FilledButton(
-                onPressed: () => setState(() => _index = 2),
-                child: const Text('Open Setup'),
-              ),
-              const SizedBox(height: 8),
-              TextButton(
-                onPressed: _connectCursor,
-                child: const Text('Retry'),
-              ),
-            ],
-          ),
-        ),
-      );
-    }
     if (_cursorLoadUrl == null) {
       return Center(
         child: Padding(
@@ -266,11 +189,13 @@ class _HomeShellState extends State<HomeShell> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Text('Configure CursorRemote server in Setup.'),
+              const Icon(Icons.link_off, size: 48, color: Color(0xFF8B949E)),
+              const SizedBox(height: 12),
+              const Text('Not paired yet.'),
               const SizedBox(height: 16),
               FilledButton(
-                onPressed: () => setState(() => _index = 2),
-                child: const Text('Open Setup'),
+                onPressed: _openSettings,
+                child: const Text('Pair now'),
               ),
             ],
           ),

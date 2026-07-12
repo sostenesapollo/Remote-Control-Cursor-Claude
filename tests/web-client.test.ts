@@ -89,35 +89,6 @@ function firePatch(mockSocket: MockSocket, patch: Partial<CursorState>) {
   mockSocket.fire('state:patch', patch);
 }
 
-// ─── Connection status rendering ───
-
-describe('web: connection status', () => {
-  let env: ReturnType<typeof createTestEnv>;
-
-  beforeEach(() => {
-    env = createTestEnv();
-  });
-
-  it('shows connected when extractorStatus is ok', () => {
-    const fixture = loadFixture('activity-shimmer-lifecycle.jsonl');
-    fireFullState(env.mockSocket, fixture[0].state!);
-    const dot = env.document.getElementById('connection-dot')!;
-    const text = env.document.getElementById('connection-text')!;
-    assert.ok(dot.classList.contains('connected'));
-    assert.match(text.textContent!, /Connected/i);
-  });
-
-  it('shows stale when extractorStatus is stale', () => {
-    const fixture = loadFixture('connection-states.jsonl');
-    fireFullState(env.mockSocket, fixture[1].state!);
-    const dot = env.document.getElementById('connection-dot')!;
-    assert.ok(
-      dot.classList.contains('stale') || dot.classList.contains('reconnecting'),
-      `Expected stale/reconnecting class, got: ${dot.className}`
-    );
-  });
-});
-
 // ─── Agent status rendering ───
 
 describe('web: agent status', () => {

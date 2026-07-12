@@ -16,6 +16,7 @@ import {
   parseSessionCookie,
   type WebappSessionStore,
 } from './webapp-sessions.js';
+import { createPairCodeStore, type PairCodeStore } from './pair-codes.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -30,71 +31,92 @@ const LOGIN_PAGE_HTML = `<!DOCTYPE html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <meta name="theme-color" content="#1a1a2e">
-  <title>CursorRemote - Login</title>
+  <meta name="theme-color" content="#0d0d12">
+  <title>CursorRemote — Pair</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
-      background: #181818;
-      color: rgba(228,228,228,0.92);
+      background: radial-gradient(ellipse at top, #161623 0%, #0d0d12 60%);
+      color: rgba(235,235,245,0.92);
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       display: flex; align-items: center; justify-content: center;
       min-height: 100dvh;
+      padding: 24px;
+      -webkit-font-smoothing: antialiased;
     }
-    .login-card {
-      width: 100%; max-width: 340px; padding: 32px 24px;
-      background: #232323; border-radius: 12px;
-      border: 1px solid rgba(255,255,255,0.06);
+    .pair-card {
+      width: 100%; max-width: 380px; padding: 36px 28px;
+      background: rgba(28,28,40,0.72); backdrop-filter: blur(20px);
+      border-radius: 20px;
+      border: 1px solid rgba(255,255,255,0.08);
+      box-shadow: 0 20px 60px rgba(0,0,0,0.4);
     }
-    h1 { font-size: 18px; font-weight: 600; margin-bottom: 6px; text-align: center; }
-    .subtitle { font-size: 13px; color: rgba(228,228,228,0.5); margin-bottom: 24px; text-align: center; }
-    label { display: block; font-size: 13px; margin-bottom: 6px; color: rgba(228,228,228,0.7); }
-    input[type="password"] {
-      width: 100%; padding: 10px 12px; font-size: 15px;
-      background: #181818; border: 1px solid rgba(255,255,255,0.12); border-radius: 8px;
-      color: rgba(228,228,228,0.92); outline: none;
+    .logo {
+      width: 56px; height: 56px; margin: 0 auto 20px;
+      background: linear-gradient(135deg, #6366f1, #8b5cf6);
+      border-radius: 16px; display: flex; align-items: center; justify-content: center;
+      font-size: 28px;
     }
-    input[type="password"]:focus { border-color: #3794ff; }
+    h1 { font-size: 22px; font-weight: 700; margin-bottom: 6px; text-align: center; letter-spacing: -0.02em; }
+    .subtitle { font-size: 14px; color: rgba(235,235,245,0.5); margin-bottom: 28px; text-align: center; line-height: 1.5; }
+    .code-input {
+      width: 100%; padding: 14px 16px; font-size: 22px; font-weight: 600;
+      text-align: center; letter-spacing: 0.1em; text-transform: uppercase;
+      background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.12); border-radius: 12px;
+      color: rgba(235,235,245,0.95); outline: none; font-family: 'SF Mono', 'Fira Code', monospace;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+    .code-input:focus { border-color: #6366f1; box-shadow: 0 0 0 3px rgba(99,102,241,0.18); }
+    .code-input::placeholder { color: rgba(235,235,245,0.25); letter-spacing: 0.1em; }
     button {
-      width: 100%; padding: 10px; margin-top: 16px; font-size: 15px; font-weight: 500;
-      background: #3794ff; color: #fff; border: none; border-radius: 8px; cursor: pointer;
+      width: 100%; padding: 14px; margin-top: 16px; font-size: 16px; font-weight: 600;
+      background: linear-gradient(135deg, #6366f1, #8b5cf6); color: #fff; border: none; border-radius: 12px; cursor: pointer;
+      transition: opacity 0.15s, transform 0.1s;
     }
-    button:hover { background: #2b7ee0; }
-    button:disabled { opacity: 0.5; cursor: not-allowed; }
-    .error { color: #e34671; font-size: 13px; margin-top: 12px; text-align: center; display: none; }
+    button:hover { opacity: 0.9; }
+    button:active { transform: scale(0.98); }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+    .error { color: #f87171; font-size: 13px; margin-top: 12px; text-align: center; display: none; }
+    .hint { font-size: 12px; color: rgba(235,235,245,0.35); margin-top: 20px; text-align: center; line-height: 1.5; }
   </style>
 </head>
 <body>
-  <form class="login-card" id="form">
-    <h1>CursorRemote</h1>
-    <p class="subtitle">Enter password to continue</p>
-    <label for="pw">Password</label>
-    <input type="password" id="pw" name="password" autocomplete="current-password" autofocus required>
-    <button type="submit" id="btn">Sign in</button>
+  <form class="pair-card" id="form">
+    <div class="logo">⚡</div>
+    <h1>Connect</h1>
+    <p class="subtitle">Enter the pairing code from your CursorRemote setup</p>
+    <input type="text" class="code-input" id="code" placeholder="XXX-XXX" autocomplete="one-time-code" autofocus required>
+    <button type="submit" id="btn">Pair device</button>
     <p class="error" id="err"></p>
+    <p class="hint">Find the code in Cursor: Command Palette → CursorRemote: Setup</p>
   </form>
   <script>
     const form = document.getElementById('form');
-    const pw = document.getElementById('pw');
+    const codeInput = document.getElementById('code');
     const btn = document.getElementById('btn');
     const err = document.getElementById('err');
+    codeInput.addEventListener('input', () => {
+      let v = codeInput.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
+      if (v.length > 3) v = v.slice(0,3) + '-' + v.slice(3,6);
+      codeInput.value = v;
+    });
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       btn.disabled = true;
       err.style.display = 'none';
       try {
-        const res = await fetch('/api/login', {
+        const res = await fetch('/api/pair', {
           method: 'POST',
           credentials: 'same-origin',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ password: pw.value }),
+          body: JSON.stringify({ code: codeInput.value }),
         });
         const data = await res.json();
         if (res.ok && data.token) {
           localStorage.setItem('cursor-remote-token', data.token);
           window.location.href = '/';
         } else {
-          err.textContent = data.error || 'Invalid password';
+          err.textContent = data.error || 'Invalid code';
           err.style.display = 'block';
         }
       } catch {
@@ -117,12 +139,19 @@ export class Relay {
   private cdpBridge: CDPBridge;
 
   private sessionStore: WebappSessionStore;
+  private pairCodeStore: PairCodeStore;
   private loginAttempts = new Map<string, RateLimitEntry>();
 
   /** Max-Age for session cookie (30 days), aligned with typical “stay signed in” expectation. */
   private static readonly SESSION_COOKIE_MAX_AGE_SEC = 30 * 24 * 60 * 60;
 
+  /** Auth is enabled if a password is set OR pairing is enabled (default). */
   private get authEnabled(): boolean {
+    return this.config.webappPassword.length > 0 || this.config.pairingEnabled;
+  }
+
+  /** Legacy password auth only — pairing uses its own flow. */
+  private get passwordAuthEnabled(): boolean {
     return this.config.webappPassword.length > 0;
   }
 
@@ -137,6 +166,7 @@ export class Relay {
     this.commandExecutor = commandExecutor;
     this.cdpBridge = cdpBridge;
     this.sessionStore = createWebappSessionStore(config.dataDir);
+    this.pairCodeStore = createPairCodeStore(config.dataDir);
 
     this.app = express();
     this.httpServer = createServer(this.app);
@@ -153,8 +183,11 @@ export class Relay {
     this.setupSocketHandlers();
     this.setupStateForwarding();
 
-    if (this.authEnabled) {
+    if (this.passwordAuthEnabled) {
       console.log('[relay] Web app password protection enabled');
+    }
+    if (this.config.pairingEnabled) {
+      console.log('[relay] Pairing-code auth enabled');
     }
   }
 
@@ -237,8 +270,69 @@ export class Relay {
       res.type('html').send(LOGIN_PAGE_HTML);
     });
 
+    // --- Pairing: generate a code (extension calls this) ---
+    this.app.post('/api/pair/code', (req, res) => {
+      if (!this.config.pairingEnabled) {
+        return res.status(403).json({ error: 'Pairing disabled' });
+      }
+      // Optional shared secret to restrict who can mint codes. Defaults to none
+      // (extension is trusted since it spawns the server locally).
+      const expectedSecret = process.env.PAIR_CODE_SECRET ?? '';
+      if (expectedSecret) {
+        const provided = req.headers['x-pair-secret'];
+        if (typeof provided !== 'string' || provided !== expectedSecret) {
+          return res.status(401).json({ error: 'Unauthorized' });
+        }
+      }
+      const code = this.pairCodeStore.generate();
+      console.log('[relay] Generated pairing code');
+      res.json({ code, expiresInMs: 10 * 60 * 1000 });
+    });
+
+    // --- Pairing: redeem a code (web/mobile client calls this) ---
+    this.app.post('/api/pair', (req, res) => {
+      if (!this.config.pairingEnabled) {
+        return res.status(403).json({ error: 'Pairing disabled' });
+      }
+      const ip = this.getClientIp(req);
+      const { allowed, retryAfter } = this.checkRateLimit(ip);
+      if (!allowed) {
+        res.set('Retry-After', String(retryAfter));
+        return res.status(429).json({ error: `Too many attempts. Retry in ${retryAfter}s.` });
+      }
+      const code = typeof req.body?.code === 'string' ? req.body.code : '';
+      if (!code) {
+        return res.status(400).json({ error: 'Code required' });
+      }
+      const ok = this.pairCodeStore.consume(code);
+      if (!ok) {
+        console.warn(`[relay] Failed pairing attempt from ${ip}`);
+        return res.status(401).json({ error: 'Invalid or expired code' });
+      }
+      const token = randomBytes(32).toString('hex');
+      this.sessionStore.add(token);
+      console.log(`[relay] Successful pairing from ${ip}`);
+      res.setHeader(
+        'Set-Cookie',
+        [
+          `${WEBAPP_SESSION_COOKIE}=${token}`,
+          'HttpOnly',
+          'Path=/',
+          'SameSite=Lax',
+          `Max-Age=${Relay.SESSION_COOKIE_MAX_AGE_SEC}`,
+        ].join('; ')
+      );
+      return res.json({ token });
+    });
+
     this.app.post('/api/login', (req, res) => {
-      if (!this.authEnabled) return res.json({ token: 'no-auth' });
+      if (!this.passwordAuthEnabled) {
+        // Pairing-only mode: legacy login disabled
+        if (this.config.pairingEnabled) {
+          return res.status(403).json({ error: 'Use pairing code' });
+        }
+        return res.json({ token: 'no-auth' });
+      }
 
       const ip = this.getClientIp(req);
       const { allowed, retryAfter } = this.checkRateLimit(ip);
@@ -282,6 +376,7 @@ export class Relay {
       res.json({
         ok: true,
         authRequired: this.authEnabled,
+        pairingEnabled: this.config.pairingEnabled,
         sessionValid: sessionOk,
         connected: state.connected,
         extractorStatus: state.extractorStatus,

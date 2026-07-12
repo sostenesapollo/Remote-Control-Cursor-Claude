@@ -83,8 +83,8 @@
         },
         "cursorRemote.serverHost": {
           "type": "string",
-          "default": "127.0.0.1",
-          "markdownDescription": "Bind address for the web client server. Default `127.0.0.1` only allows local access. Set to `0.0.0.0` for LAN/phone access (requires a password). For secure remote access, consider [Tailscale](https://github.com/len5ky/CursorRemote/blob/main/docs/tailscale-setup.md)."
+          "default": "0.0.0.0",
+          "markdownDescription": "Bind address for the relay server. Default `0.0.0.0` allows LAN/phone access so you can pair from a phone on the same Wi-Fi. Use `127.0.0.1` for local-only. For secure remote access, see [Tailscale setup](https://github.com/len5ky/CursorRemote/blob/main/docs/tailscale-setup.md)."
         },
         "cursorRemote.pollIntervalMs": {
           "type": "number",
@@ -110,7 +110,12 @@
         "cursorRemote.webappPassword": {
           "type": "string",
           "default": "",
-          "markdownDescription": "Password to protect the web client. A random password is **auto-generated** on first install. See the [security section](https://github.com/len5ky/CursorRemote#security) for best practices."
+          "markdownDescription": "Legacy: password to protect the web client. **Deprecated** — pairing codes are now the default auth. Set only if you need legacy password auth alongside pairing."
+        },
+        "cursorRemote.pairingDisabled": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Disable pairing-code auth. When true, the relay falls back to legacy password auth (if `webappPassword` is set) or open access (if neither is set). Leave false to use the simple pairing flow."
         },
         "cursorRemote.windowTitleQualifier": {
           "type": "boolean",

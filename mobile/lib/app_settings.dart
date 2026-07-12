@@ -3,19 +3,20 @@ import 'package:shared_preferences/shared_preferences.dart';
 class AppSettings {
   AppSettings({
     this.cursorBaseUrl = '',
-    this.cursorPassword = '',
+    this.cursorToken = '',
     this.claudeUrl = 'https://claude.ai/code',
   });
 
   String cursorBaseUrl;
-  String cursorPassword;
+  String cursorToken;
   String claudeUrl;
 
   static const _kCursorUrl = 'cursor_base_url';
-  static const _kCursorPw = 'cursor_password';
+  static const _kCursorToken = 'cursor_token';
   static const _kClaudeUrl = 'claude_url';
 
-  bool get hasCursorConfig => cursorBaseUrl.trim().isNotEmpty;
+  bool get isPaired =>
+      cursorBaseUrl.trim().isNotEmpty && cursorToken.trim().isNotEmpty;
 
   Uri? get cursorUri {
     final raw = cursorBaseUrl.trim();
@@ -27,14 +28,20 @@ class AppSettings {
   Future<void> load() async {
     final prefs = await SharedPreferences.getInstance();
     cursorBaseUrl = prefs.getString(_kCursorUrl) ?? cursorBaseUrl;
-    cursorPassword = prefs.getString(_kCursorPw) ?? cursorPassword;
+    cursorToken = prefs.getString(_kCursorToken) ?? cursorToken;
     claudeUrl = prefs.getString(_kClaudeUrl) ?? claudeUrl;
   }
 
   Future<void> save() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_kCursorUrl, cursorBaseUrl.trim());
-    await prefs.setString(_kCursorPw, cursorPassword);
+    await prefs.setString(_kCursorToken, cursorToken.trim());
     await prefs.setString(_kClaudeUrl, claudeUrl.trim());
+  }
+
+  Future<void> clearPairing() async {
+    cursorToken = '';
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_kCursorToken);
   }
 }

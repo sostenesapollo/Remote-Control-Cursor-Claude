@@ -1,5 +1,4 @@
 import * as vscode from 'vscode';
-import { randomBytes } from 'crypto';
 import { join } from 'path';
 import { createOutputChannel, type UnifiedOutputChannel } from './output-channel.js';
 import { createStatusBar } from './status-bar.js';
@@ -11,26 +10,16 @@ import { TELEGRAM_BOT_TOKEN_SECRET_KEY } from './secrets.js';
 
 let serverManager: ServerManager | undefined;
 
-async function ensurePassword(): Promise<void> {
+async function ensurePairingReady(): Promise<void> {
+  // Pairing is enabled by default on the server side. Nothing to generate
+  // here — the setup panel requests a code from the running server.
+  // Keep networking accessible for remote pairing (LAN/custom).
   const config = vscode.workspace.getConfiguration('cursorRemote');
-  const current = config.get<string>('webappPassword', '');
-  if (current) return;
-
-  const generated = randomBytes(16).toString('base64url');
-  await config.update('webappPassword', generated, vscode.ConfigurationTarget.Global);
-
-  // Fire-and-forget — don't block activate() waiting for user interaction
-  vscode.window.showInformationMessage(
-    `CursorRemote: A web client password has been generated: ${generated}`,
-    'Copy to Clipboard',
-    'Open Settings'
-  ).then(action => {
-    if (action === 'Copy to Clipboard') {
-      vscode.env.clipboard.writeText(generated);
-    } else if (action === 'Open Settings') {
-      vscode.commands.executeCommand('workbench.action.openSettings', 'cursorRemote.webappPassword');
-    }
-  });
+  const host = config.get<string>('serverHost', '127.0.0.1');
+  if (host === '127.0.0.1') {
+    // Default to LAN so phones on the same Wi-Fi can pair without extra setup.
+    await config.update('serverHost', '0.0.0.0', vscode.ConfigurationTarget.Global);
+  }
 }
 
 async function migrateTelegramBotToken(
@@ -127,8 +116,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand('cursorRemote.openSetup', () => SetupPanel.createOrShow(context)),
   );
 
-  ensurePassword().catch(err => {
-    outputChannel.warn(`Password auto-generation failed: ${err}`);
+  ensurePairingReady().catch(err => {
+    outputChannel.warn(`Pairing setup failed: ${err}`);
   });
 
   const config = vscode.workspace.getConfiguration('cursorRemote');

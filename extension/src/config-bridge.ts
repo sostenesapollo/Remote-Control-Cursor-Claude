@@ -11,11 +11,13 @@ export async function buildEnvFromConfig(
   return {
     CDP_URL: config.get<string>('cdpUrl', 'http://127.0.0.1:9222'),
     SERVER_PORT: String(config.get<number>('serverPort', 3000)),
-    SERVER_HOST: config.get<string>('serverHost', '127.0.0.1'),
+    SERVER_HOST: config.get<string>('serverHost', '0.0.0.0'),
     POLL_INTERVAL_MS: String(config.get<number>('pollIntervalMs', 500)),
     DEBOUNCE_MS: String(config.get<number>('debounceMs', 300)),
     LOG_LEVEL: config.get<string>('logLevel', 'info'),
+    // Pairing is the default auth mode. Legacy password kept only if explicitly set.
     WEBAPP_PASSWORD: config.get<string>('webappPassword', ''),
+    PAIRING_DISABLED: String(config.get<boolean>('pairingDisabled', false)),
     WINDOW_TITLE_QUALIFIER: String(config.get<boolean>('windowTitleQualifier', true)),
     TELEGRAM_ENABLED: String(config.get<boolean>('telegram.enabled', false)),
     TELEGRAM_BOT_TOKEN: telegramBotToken,

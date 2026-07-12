@@ -1,36 +1,34 @@
 # Conectar o celular (sem pagar)
 
-## No app Android → Setup
+## Ngrok (de fora da rede)
+
+Túnel ativo → no app **Setup**:
+
+- Server URL: `https://c8db-2803-2a00-2002-e856-d989-f9f9-96a9-effe.ngrok-free.app`
+- Password: `DC8b4ZnLg8etGUiP`
+
+Reinstala o APK atualizado (pula aviso do ngrok free):
+
+`releases/cursor-remote-mobile-1.0.0.apk`
+
+Subir o túnel de novo (quando cair):
+
+```fish
+ngrok http 3000
+```
+
+A URL muda a cada sessão no plano free — copia a nova `https://….ngrok-free.app` pro Setup.
+
+## LAN (mesma Wi‑Fi)
 
 - Server URL: `192.168.100.6:3000`
 - Password: `DC8b4ZnLg8etGUiP`
 
-Depois: Save & connect → aba Cursor.
-
-## No Mac (obrigatório uma vez)
-
-O Cursor precisa subir com CDP na porta **9223** (a 9222 está ocupada pelo Chrome).
-
-1. Fecha o Cursor de verdade: **Cmd+Q**
-2. No Terminal (fish):
+## No Mac
 
 ```fish
 open -a Cursor --args --remote-debugging-port=9223
-```
-
-3. Confirma:
-
-```fish
-curl http://127.0.0.1:9223/json
-```
-
-Deve voltar JSON. O relay já está rodando em `0.0.0.0:3000` sem license paga.
-
-## Relay
-
-```fish
 cd ~/dev/CursorRemote
 npm start
+ngrok http 3000
 ```
-
-Senha também está em `.env` → `WEBAPP_PASSWORD`.

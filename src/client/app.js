@@ -4,6 +4,12 @@
   'use strict';
 
   const AUTH_TOKEN_KEY = 'cursor-remote-token';
+  const PAIRED_KEY = 'cursor-remote-paired';
+  const TAB_ORDER_KEY = 'cursor-remote-tab-order';
+  const WINDOW_ORDER_KEY = 'cursor-remote-window-order';
+  const TAB_RECENT_KEY = 'cursor-remote-tab-recent';
+  const WINDOW_RECENT_KEY = 'cursor-remote-window-recent';
+
   const defaultState = {
     connected: false,
     extractorStatus: 'idle',
@@ -35,60 +41,139 @@
     return token ? { 'Authorization': 'Bearer ' + token } : {};
   }
 
+  function isPaired() {
+    return localStorage.getItem(PAIRED_KEY) === '1';
+  }
+
+  function setPaired(v) {
+    if (v) localStorage.setItem(PAIRED_KEY, '1');
+    else localStorage.removeItem(PAIRED_KEY);
+  }
+
+  function getStoredOrder(key) {
+    try {
+      const raw = localStorage.getItem(key);
+      return raw ? JSON.parse(raw) : [];
+    } catch { return []; }
+  }
+
+  function saveStoredOrder(key, ids) {
+    try { localStorage.setItem(key, JSON.stringify(ids)); } catch { /* ignore */ }
+  }
+
+  function getRecentMap(key) {
+    try {
+      const raw = localStorage.getItem(key);
+      return raw ? JSON.parse(raw) : {};
+    } catch { return {}; }
+  }
+
+  function bumpRecent(key, id) {
+    const map = getRecentMap(key);
+    map[id] = Date.now();
+    // Prune entries older than 5 minutes
+    const cutoff = Date.now() - 5 * 60 * 1000;
+    for (const k in map) if (map[k] < cutoff) delete map[k];
+    try { localStorage.setItem(key, JSON.stringify(map)); } catch { /* ignore */ }
+  }
+
   function newCommandId() {
     const cryptoApi = globalThis.crypto;
     if (cryptoApi && typeof cryptoApi.randomUUID === 'function') {
       return cryptoApi.randomUUID();
     }
-
     const bytes = new Uint8Array(16);
     if (cryptoApi && typeof cryptoApi.getRandomValues === 'function') {
       cryptoApi.getRandomValues(bytes);
     } else {
-      for (let i = 0; i < bytes.length; i++) {
-        bytes[i] = Math.floor(Math.random() * 256);
-      }
+      for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
     }
-
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
     const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
-    return [
-      hex.slice(0, 8),
-      hex.slice(8, 12),
-      hex.slice(12, 16),
-      hex.slice(16, 20),
-      hex.slice(20),
-    ].join('-');
+    return [hex.slice(0, 8), hex.slice(8, 12), hex.slice(12, 16), hex.slice(16, 20), hex.slice(20)].join('-');
   }
 
   async function checkAuth() {
     try {
-      const res = await fetch('/health', {
-        credentials: 'same-origin',
-        headers: getAuthHeaders(),
-      });
+      const res = await fetch('/health', { credentials: 'same-origin', headers: getAuthHeaders() });
       if (res.ok) {
         const data = await res.json();
         if (data.authRequired) {
           if (data.sessionValid === true) return true;
           if (data.sessionValid === false) {
             localStorage.removeItem(AUTH_TOKEN_KEY);
-            window.location.href = '/login';
+            setPaired(false);
             return false;
           }
-          // Older relay without sessionValid: fall back to presence of stored token
           if (getAuthToken()) return true;
-          window.location.href = '/login';
           return false;
         }
+        return true;
       }
-    } catch { /* network error, proceed anyway */ }
+    } catch { /* network error */ }
     return true;
   }
 
+  function showOnboarding() {
+    const el = document.getElementById('onboarding');
+    if (el) el.classList.remove('hidden');
+  }
+  function hideOnboarding() {
+    const el = document.getElementById('onboarding');
+    if (el) el.classList.add('hidden');
+  }
+
+  function setupOnboarding() {
+    const codeInput = document.getElementById('onboarding-code');
+    const btn = document.getElementById('onboarding-pair-btn');
+    const errEl = document.getElementById('onboarding-error');
+
+    codeInput.addEventListener('input', () => {
+      let v = codeInput.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
+      if (v.length > 3) v = v.slice(0, 3) + '-' + v.slice(3, 6);
+      codeInput.value = v;
+      errEl.textContent = '';
+    });
+
+    async function submit() {
+      btn.disabled = true;
+      errEl.textContent = '';
+      try {
+        const res = await fetch('/api/pair', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code: codeInput.value }),
+        });
+        const data = await res.json();
+        if (res.ok && data.token) {
+          localStorage.setItem(AUTH_TOKEN_KEY, data.token);
+          setPaired(true);
+          hideOnboarding();
+          bootstrap();
+        } else {
+          errEl.textContent = data.error || 'Invalid code';
+        }
+      } catch {
+        errEl.textContent = 'Network error';
+      }
+      btn.disabled = false;
+    }
+
+    btn.addEventListener('click', submit);
+    codeInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); submit(); }
+    });
+  }
+
   async function init() {
-    if (!await checkAuth()) return;
+    setupOnboarding();
+    const ok = await checkAuth();
+    if (!ok) {
+      showOnboarding();
+      return;
+    }
     bootstrap();
   }
 
@@ -122,11 +207,9 @@
   const $emptyState = document.getElementById('empty-state');
   const $emptyPrimary = document.getElementById('empty-state-primary');
   const $emptyHint = document.getElementById('empty-state-hint');
-  const $connDot = document.getElementById('connection-dot');
-  const $connText = document.getElementById('connection-text');
   const $statusIcon = document.getElementById('agent-status-icon');
   const $statusText = document.getElementById('agent-status-text');
-  const $headerRight = document.querySelector('#header .header-right');
+  const $btnUnpair = document.getElementById('btn-unpair');
   const $approvalBar = document.getElementById('approval-bar');
   const $approvalDesc = document.getElementById('approval-desc');
   const $btnApprove = document.getElementById('btn-approve');
@@ -171,11 +254,7 @@
     reconnectionDelayMax: 10000,
     withCredentials: true,
     auth: (cb) => {
-      try {
-        cb({ token: getAuthToken() || '' });
-      } catch {
-        cb({ token: '' });
-      }
+      try { cb({ token: getAuthToken() || '' }); } catch { cb({ token: '' }); }
     },
   });
 
@@ -186,12 +265,7 @@
         pendingCommandResults.delete(commandId);
         resolve({ commandId, ok: false, error: 'Command timed out' });
       }, 12000);
-
-      pendingCommandResults.set(commandId, (result) => {
-        clearTimeout(timer);
-        resolve(result);
-      });
-
+      pendingCommandResults.set(commandId, (result) => { clearTimeout(timer); resolve(result); });
       socket.emit(eventName, payload);
     });
   }
@@ -204,17 +278,26 @@
     connectFailCount++;
     if (err.message === 'Unauthorized' || connectFailCount >= 5) {
       localStorage.removeItem(AUTH_TOKEN_KEY);
-      window.location.href = '/login';
+      setPaired(false);
+      socket.disconnect();
+      showOnboarding();
     }
   });
 
   socket.on('state:full', (newState) => {
     state = { ...defaultState, ...newState };
+    // Track recent activity for tabs/windows
+    const activeTab = (state.chatTabs || []).find(t => t.isActive);
+    if (activeTab) bumpRecent(TAB_RECENT_KEY, activeTab.title);
+    if (state.activeWindowId) bumpRecent(WINDOW_RECENT_KEY, state.activeWindowId);
     renderAll();
   });
 
   socket.on('state:patch', (patch) => {
     Object.assign(state, patch);
+    const activeTab = (state.chatTabs || []).find(t => t.isActive);
+    if (activeTab) bumpRecent(TAB_RECENT_KEY, activeTab.title);
+    if (state.activeWindowId) bumpRecent(WINDOW_RECENT_KEY, state.activeWindowId);
     renderAll();
   });
 
@@ -233,6 +316,13 @@
     if (!result.ok) showToast(result.error || 'Command failed', 'error');
   });
 
+  $btnUnpair.addEventListener('click', () => {
+    localStorage.removeItem(AUTH_TOKEN_KEY);
+    setPaired(false);
+    socket.disconnect();
+    showOnboarding();
+  });
+
   $messages.addEventListener('scroll', () => {
     autoScrollJob++;
     userScrolledUp = !isNearMessagesBottom();
@@ -244,24 +334,12 @@
     $btnSend.disabled = !$input.value.trim();
   });
 
-  // Send-on-Enter behaves differently per primary input device:
-  //   - Touch (mobile): Enter = newline (textarea default), tap Send to send.
-  //     Mobile keyboards have no Shift+Enter so without this you can't write
-  //     multi-line messages — reported as public#5.
-  //   - Mouse/keyboard (desktop): Enter = send (preserved existing behavior),
-  //     Shift+Enter = newline.
-  // Cmd/Ctrl+Enter always sends, both platforms — for hardware keyboards
-  // attached to phones/tablets and as a familiar shortcut on desktop.
   const isTouchPrimary = () => window.matchMedia('(pointer: coarse)').matches;
   $input.addEventListener('keydown', (e) => {
     if (e.key !== 'Enter') return;
-    if (e.metaKey || e.ctrlKey) {
-      e.preventDefault();
-      sendMessage();
-      return;
-    }
-    if (e.shiftKey) return; // textarea default → newline
-    if (isTouchPrimary()) return; // mobile: newline, send button only
+    if (e.metaKey || e.ctrlKey) { e.preventDefault(); sendMessage(); return; }
+    if (e.shiftKey) return;
+    if (isTouchPrimary()) return;
     e.preventDefault();
     sendMessage();
   });
@@ -273,11 +351,7 @@
     if (!approval) return;
     const action = approval.actions.find(a => a.type === 'approve' || a.type === 'approve_all');
     if (!action) return;
-    socket.emit('command:approve', {
-      commandId: newCommandId(),
-      approvalId: approval.id,
-      selectorPath: action.selectorPath,
-    });
+    socket.emit('command:approve', { commandId: newCommandId(), approvalId: approval.id, selectorPath: action.selectorPath });
     showToast('Approve sent', 'success');
   });
 
@@ -286,31 +360,19 @@
     if (!approval) return;
     const action = approval.actions.find(a => a.type === 'reject');
     if (!action) return;
-    socket.emit('command:reject', {
-      commandId: newCommandId(),
-      approvalId: approval.id,
-      selectorPath: action.selectorPath,
-    });
+    socket.emit('command:reject', { commandId: newCommandId(), approvalId: approval.id, selectorPath: action.selectorPath });
     showToast('Reject sent', 'success');
   });
 
   $btnQSkip.addEventListener('click', () => {
     if (!state.questionnaire) return;
-    socket.emit('command:click_action', {
-      commandId: newCommandId(),
-      selectorPath: state.questionnaire.skipSelectorPath,
-      actionLabel: 'Skip',
-    });
+    socket.emit('command:click_action', { commandId: newCommandId(), selectorPath: state.questionnaire.skipSelectorPath, actionLabel: 'Skip' });
     showToast('Skip sent', 'success');
   });
 
   $btnQContinue.addEventListener('click', () => {
     if (!state.questionnaire || state.questionnaire.continueDisabled) return;
-    socket.emit('command:click_action', {
-      commandId: newCommandId(),
-      selectorPath: state.questionnaire.continueSelectorPath,
-      actionLabel: 'Continue',
-    });
+    socket.emit('command:click_action', { commandId: newCommandId(), selectorPath: state.questionnaire.continueSelectorPath, actionLabel: 'Continue' });
     showToast('Continue sent', 'success');
   });
 
@@ -323,9 +385,7 @@
   $pillModel.addEventListener('click', () => openSheet('model'));
   $sheetOverlay.addEventListener('click', closeSheet);
   $planModalClose.addEventListener('click', closePlanModal);
-  $planModalOverlay.addEventListener('click', (e) => {
-    if (e.target === $planModalOverlay) closePlanModal();
-  });
+  $planModalOverlay.addEventListener('click', (e) => { if (e.target === $planModalOverlay) closePlanModal(); });
 
   function sendMessage() {
     const text = $input.value.trim();
@@ -338,7 +398,6 @@
   }
 
   function renderAll() {
-    renderConnectionStatus();
     renderAgentStatus();
     renderComposerQueue();
     renderWindows();
@@ -351,92 +410,15 @@
     syncPlanModalFromState();
   }
 
-  function renderConnectionStatus() {
-    const ui = getConnectionUiState();
-    updateConnectionUI(ui.status, ui.label);
-  }
-
-  function updateConnectionUI(status, label) {
-    $connDot.className = 'dot ' + status;
-    const labels = { connected: 'Connected', disconnected: 'Disconnected', reconnecting: 'Connecting...' };
-    $connText.textContent = label || labels[status] || status;
-  }
-
-  function getConnectionUiState() {
-    const lastError = (state.lastExtractionError || '').trim();
-    const timeoutLike = /timeout/i.test(lastError);
-
-    if (!socket.connected) {
-      return {
-        status: 'disconnected',
-        label: 'Relay disconnected',
-        emptyPrimary: 'Waiting for relay connection...',
-        emptyHint: 'Check that this page can reach the CursorRemote server.',
-      };
-    }
-
-    if (!state.connected) {
-      return {
-        status: 'reconnecting',
-        label: 'Waiting for Cursor',
-        emptyPrimary: 'Connecting to Cursor IDE...',
-        emptyHint: 'Make sure Cursor is running with<br><code>--remote-debugging-port=9222</code>',
-      };
-    }
-
-    if (state.extractorStatus === 'stale') {
-      return {
-        status: 'reconnecting',
-        label: timeoutLike ? 'Cursor backgrounded' : 'Cursor stalled',
-        emptyPrimary: timeoutLike
-          ? 'Cursor is connected but background-throttled.'
-          : 'Cursor is connected but extraction is failing.',
-        emptyHint: timeoutLike
-          ? 'Bring Cursor to the foreground on macOS, then wait for the next snapshot.'
-          : ('Last extractor error:<br><code>' + escapeHtml(lastError || 'unknown error') + '</code>'),
-      };
-    }
-
-    if (state.extractorStatus === 'waiting') {
-      return {
-        status: 'reconnecting',
-        label: 'Waiting for snapshot',
-        emptyPrimary: 'Connected to Cursor, waiting for the first snapshot...',
-        emptyHint: lastError
-          ? ('Last extractor error:<br><code>' + escapeHtml(lastError) + '</code>')
-          : 'The relay is connected to Cursor but has not captured a fresh DOM snapshot yet.',
-      };
-    }
-
-    return {
-      status: 'connected',
-      label: 'Connected',
-      emptyPrimary: 'No messages in this chat yet.',
-      emptyHint: 'Send a message below or switch chat tab / window in Cursor.',
-    };
-  }
-
   function renderAgentStatus() {
-    const icons = {
-      idle: '',
-      thinking: '',
-      generating: '',
-      running_tool: '',
-      waiting_approval: '!',
-      error: '\u2715',
-    };
     const labels = {
       idle: 'Idle', thinking: 'Thinking...', generating: 'Generating...',
       running_tool: 'Running tool...', waiting_approval: 'Needs approval', error: 'Error',
     };
-    $statusIcon.textContent = icons[state.agentStatus] || '';
+    $statusIcon.textContent = '';
     const activity = (state.agentActivityText || '').trim();
     const activityLive = !!state.agentActivityLive;
     const baseLabel = labels[state.agentStatus] || state.agentStatus;
-    if ($headerRight) {
-      if (state.agentStatus !== 'idle') $headerRight.classList.remove('header-right-hidden');
-      else $headerRight.classList.add('header-right-hidden');
-    }
     if (activityLive && activity && state.agentStatus !== 'idle') {
       const max = 56;
       $statusText.textContent = activity.length > max ? activity.slice(0, max - 1) + '…' : activity;
@@ -445,10 +427,15 @@
       $statusText.textContent = baseLabel;
       $statusText.classList.remove('agent-status-shimmer');
     }
-
+    const statusClass = 'agent-status-' + (state.agentStatus || 'idle');
+    $statusText.className = 'agent-status-text ' + statusClass;
     if (state.agentStatus === 'waiting_approval') $statusText.style.color = 'var(--accent-yellow)';
     else if (state.agentStatus === 'error') $statusText.style.color = 'var(--accent-red)';
     else $statusText.style.color = '';
+
+    // Show unpair button only when connected
+    if (isPaired()) $btnUnpair.classList.remove('hidden');
+    else $btnUnpair.classList.add('hidden');
   }
 
   function renderComposerQueue() {
@@ -456,14 +443,8 @@
     const labelEl = document.getElementById('composer-queue-label');
     const itemsEl = document.getElementById('composer-queue-items');
     if (!bar || !labelEl || !itemsEl) return;
-    const q = state.composerQueue && Array.isArray(state.composerQueue.items)
-      ? state.composerQueue
-      : { items: [] };
-    if (q.items.length === 0) {
-      bar.classList.add('hidden');
-      itemsEl.innerHTML = '';
-      return;
-    }
+    const q = state.composerQueue && Array.isArray(state.composerQueue.items) ? state.composerQueue : { items: [] };
+    if (q.items.length === 0) { bar.classList.add('hidden'); itemsEl.innerHTML = ''; return; }
     bar.classList.remove('hidden');
     labelEl.textContent = q.queueLabel || `${q.items.length} queued`;
     itemsEl.innerHTML = '';
@@ -485,37 +466,26 @@
 
   function renderMessages() {
     if (state.messages.length === 0) {
-      const ui = getConnectionUiState();
+      const ui = getEmptyState();
       $emptyState.style.display = '';
       $messages.querySelectorAll('.chat-el').forEach(el => el.remove());
-      $emptyPrimary.textContent = ui.emptyPrimary;
-      $emptyHint.innerHTML = ui.emptyHint;
+      $emptyPrimary.textContent = ui.primary;
+      $emptyHint.innerHTML = ui.hint;
       return;
     }
-
     $emptyState.style.display = 'none';
-
     const existingEls = $messages.querySelectorAll('.chat-el');
     const existingIds = new Map();
     existingEls.forEach(el => existingIds.set(el.dataset.id, el));
-
     const newIds = new Set(state.messages.map(m => m.id));
-
-    existingEls.forEach(el => {
-      if (!newIds.has(el.dataset.id)) el.remove();
-    });
-
+    existingEls.forEach(el => { if (!newIds.has(el.dataset.id)) el.remove(); });
     state.messages.forEach((msg, index) => {
       let el = existingIds.get(msg.id);
-
       if (!el) {
         el = createElement(msg);
         const allEls = $messages.querySelectorAll('.chat-el');
-        if (index < allEls.length) {
-          $messages.insertBefore(el, allEls[index]);
-        } else {
-          $messages.appendChild(el);
-        }
+        if (index < allEls.length) $messages.insertBefore(el, allEls[index]);
+        else $messages.appendChild(el);
       } else if (el.dataset.msgType !== msg.type) {
         const replacement = createElement(msg);
         el.replaceWith(replacement);
@@ -524,9 +494,16 @@
         updateElement(el, msg);
       }
     });
-
     if (!userScrolledUp) scheduleMessagesAutoScroll();
     checkMessagesForNotifications();
+  }
+
+  function getEmptyState() {
+    if (!socket.connected) return { primary: 'Connecting...', hint: 'Waiting for relay.' };
+    if (!state.connected) return { primary: 'Waiting for Cursor', hint: 'Make sure Cursor is running.' };
+    if (state.extractorStatus === 'stale') return { primary: 'Cursor stalled', hint: 'Extraction is failing.' };
+    if (state.extractorStatus === 'waiting') return { primary: 'Waiting for snapshot...', hint: 'Connected to Cursor.' };
+    return { primary: 'No messages in this chat yet.', hint: 'Send a message below.' };
   }
 
   function createElement(msg) {
@@ -579,14 +556,9 @@
     const el = document.createElement('div');
     el.className = 'chat-el el-human';
     el.dataset.id = msg.id;
-
     const bubble = document.createElement('div');
     bubble.className = 'human-bubble';
-
-    if (msg.quoted && msg.quoted.text) {
-      bubble.appendChild(createQuotedWidget(msg.quoted.text));
-    }
-
+    if (msg.quoted && msg.quoted.text) bubble.appendChild(createQuotedWidget(msg.quoted.text));
     if (msg.mentions && msg.mentions.length > 0) {
       const mentionsRow = document.createElement('div');
       mentionsRow.className = 'mentions-row';
@@ -598,7 +570,6 @@
       });
       bubble.appendChild(mentionsRow);
     }
-
     const text = document.createElement('div');
     text.className = 'human-text';
     text.textContent = msg.text;
@@ -618,9 +589,7 @@
         const body = qw.querySelector('.quoted-text');
         if (body) body.textContent = msg.quoted.text;
       }
-    } else if (qw) {
-      qw.remove();
-    }
+    } else if (qw) qw.remove();
     const text = el.querySelector('.human-text');
     if (text) text.textContent = msg.text;
   }
@@ -637,30 +606,23 @@
     document.removeEventListener('keydown', onCodeBlockFsKeydown);
   }
 
-  function onCodeBlockFsKeydown(e) {
-    if (e.key === 'Escape') closeCodeBlockFullscreen();
-  }
+  function onCodeBlockFsKeydown(e) { if (e.key === 'Escape') closeCodeBlockFullscreen(); }
 
-  /** Full-screen overlay for long code/diff (mobile-friendly scroll + safe areas). */
   function openCodeBlockFullscreen(wrapper) {
     closeCodeBlockFullscreen();
     const viewport = wrapper.querySelector('.code-block-viewport');
     const headerEl = wrapper.querySelector('.code-block-header');
     const title = (headerEl && headerEl.textContent.trim()) || 'Code';
-
     const overlay = document.createElement('div');
     overlay.className = 'code-block-fs-overlay';
     overlay.setAttribute('role', 'dialog');
     overlay.setAttribute('aria-modal', 'true');
     overlay.setAttribute('aria-label', title);
-
     const backdrop = document.createElement('div');
     backdrop.className = 'code-block-fs-backdrop';
     backdrop.addEventListener('click', closeCodeBlockFullscreen);
-
     const panel = document.createElement('div');
     panel.className = 'code-block-fs-panel';
-
     const panelHead = document.createElement('div');
     panelHead.className = 'code-block-fs-panel-header';
     const titleSpan = document.createElement('span');
@@ -671,19 +633,12 @@
     closeBtn.className = 'code-block-fs-close';
     closeBtn.setAttribute('aria-label', 'Close');
     closeBtn.textContent = '\u2715';
-    closeBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      closeCodeBlockFullscreen();
-    });
+    closeBtn.addEventListener('click', (e) => { e.stopPropagation(); closeCodeBlockFullscreen(); });
     panelHead.appendChild(titleSpan);
     panelHead.appendChild(closeBtn);
-
     const scroll = document.createElement('div');
     scroll.className = 'code-block-fs-scroll';
-    if (viewport && viewport.firstElementChild) {
-      scroll.appendChild(viewport.firstElementChild.cloneNode(true));
-    }
-
+    if (viewport && viewport.firstElementChild) scroll.appendChild(viewport.firstElementChild.cloneNode(true));
     panel.appendChild(panelHead);
     panel.appendChild(scroll);
     overlay.appendChild(backdrop);
@@ -695,38 +650,28 @@
     closeBtn.focus();
   }
 
-  /** Native code/diff from server `CodeBlockItem` (no mirrored Monaco HTML). */
   function createNativeBlockFromItem(item, filenameFallback) {
     const wrapper = document.createElement('div');
     wrapper.className = 'code-block native-code-block';
-
     const title = (item.filename || item.language || filenameFallback || '').trim();
     const toolbar = document.createElement('div');
-    toolbar.className =
-      'code-block-toolbar' + (title ? '' : ' code-block-toolbar--actions-only');
+    toolbar.className = 'code-block-toolbar' + (title ? '' : ' code-block-toolbar--actions-only');
     if (title) {
       const header = document.createElement('div');
       header.className = 'code-block-header';
       header.textContent = title;
       toolbar.appendChild(header);
     }
-
     const expandBtn = document.createElement('button');
     expandBtn.type = 'button';
     expandBtn.className = 'code-block-fullscreen-btn';
     expandBtn.setAttribute('aria-label', 'View full screen');
-    expandBtn.innerHTML =
-      '<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg>';
-    expandBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      openCodeBlockFullscreen(wrapper);
-    });
+    expandBtn.innerHTML = '<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg>';
+    expandBtn.addEventListener('click', (e) => { e.stopPropagation(); openCodeBlockFullscreen(wrapper); });
     toolbar.appendChild(expandBtn);
     wrapper.appendChild(toolbar);
-
     const viewport = document.createElement('div');
     viewport.className = 'code-block-viewport';
-
     const body = document.createElement('div');
     body.className = 'code-block-diff-plain';
     if (item.blockKind === 'diff' && item.diffLines && item.diffLines.length > 0) {
@@ -764,10 +709,8 @@
     const el = document.createElement('div');
     el.className = 'chat-el el-assistant';
     el.dataset.id = msg.id;
-
     const bubble = document.createElement('div');
     bubble.className = 'assistant-bubble';
-
     if (msg.html) {
       const content = document.createElement('div');
       content.className = 'assistant-content markdown-body';
@@ -780,9 +723,7 @@
       content.textContent = msg.text;
       bubble.appendChild(content);
     }
-
     appendAssistantNativeBlocks(bubble, msg);
-
     el.appendChild(bubble);
     return el;
   }
@@ -808,15 +749,12 @@
     const el = document.createElement('div');
     el.className = 'chat-el el-tool';
     el.dataset.id = msg.id;
-
     const line = document.createElement('div');
     line.className = 'tool-line ' + msg.status;
-
     const icon = document.createElement('span');
     icon.className = 'tool-icon';
     icon.textContent = msg.status === 'completed' ? '\u2713' : '\u2022';
     line.appendChild(icon);
-
     if (msg.summaryText) {
       const summary = document.createElement('span');
       summary.className = 'tool-summary';
@@ -836,11 +774,9 @@
         line.appendChild(details);
       }
     }
-
     if (msg.filename || msg.additions != null || msg.deletions != null) {
       const fileInfo = document.createElement('span');
       fileInfo.className = 'tool-file-info';
-
       if (msg.filename) {
         const fn = document.createElement('span');
         fn.className = 'tool-filename';
@@ -859,50 +795,26 @@
         del.textContent = '-' + msg.deletions;
         fileInfo.appendChild(del);
       }
-
       line.appendChild(fileInfo);
     }
-
     el.appendChild(line);
-
     if (msg.actions && msg.actions.length > 0) {
       const actionsRow = document.createElement('div');
       actionsRow.className = 'tool-actions-row';
       appendRunStyleActionButtons(actionsRow, msg.actions);
       el.appendChild(actionsRow);
     }
-
     syncToolDiffHost(el, msg);
     return el;
   }
 
-  /** Tool edit diff: native block from `diffBlock` (structured lines). */
   function syncToolDiffHost(el, msg) {
     const db = msg.diffBlock;
-    const hasBody =
-      db &&
-      ((db.diffLines && db.diffLines.length > 0) || (db.code && String(db.code).trim().length > 0));
+    const hasBody = db && ((db.diffLines && db.diffLines.length > 0) || (db.code && String(db.code).trim().length > 0));
     let host = el.querySelector('.tool-diff-host');
-
-    if (!hasBody) {
-      if (host) {
-        delete host._nativeDiffKey;
-        host.remove();
-      }
-      return;
-    }
-
-    const key = JSON.stringify({
-      bk: db.blockKind,
-      c: db.code,
-      d: db.diffLines,
-      f: db.filename || msg.filename,
-    });
-    if (!host) {
-      host = document.createElement('div');
-      host.className = 'tool-diff-host';
-      el.appendChild(host);
-    }
+    if (!hasBody) { if (host) { delete host._nativeDiffKey; host.remove(); } return; }
+    const key = JSON.stringify({ bk: db.blockKind, c: db.code, d: db.diffLines, f: db.filename || msg.filename });
+    if (!host) { host = document.createElement('div'); host.className = 'tool-diff-host'; el.appendChild(host); }
     if (host._nativeDiffKey === key) return;
     host._nativeDiffKey = key;
     host.innerHTML = '';
@@ -914,19 +826,14 @@
     const newLine = fresh.querySelector('.tool-line');
     const oldLine = el.querySelector('.tool-line');
     if (newLine && oldLine) el.replaceChild(newLine, oldLine);
-
     const newActions = fresh.querySelector('.tool-actions-row');
     const oldActions = el.querySelector('.tool-actions-row');
-    if (newActions && oldActions) {
-      el.replaceChild(newActions, oldActions);
-    } else if (newActions && !oldActions) {
+    if (newActions && oldActions) el.replaceChild(newActions, oldActions);
+    else if (newActions && !oldActions) {
       const diffHost = el.querySelector('.tool-diff-host');
       if (diffHost) el.insertBefore(newActions, diffHost);
       else el.appendChild(newActions);
-    } else if (!newActions && oldActions) {
-      oldActions.remove();
-    }
-
+    } else if (!newActions && oldActions) oldActions.remove();
     syncToolDiffHost(el, msg);
   }
 
@@ -969,7 +876,6 @@
     const el = document.createElement('div');
     el.className = 'chat-el el-thought';
     el.dataset.id = msg.id;
-
     const inner = document.createElement('div');
     inner.className = 'thought-line';
     syncThoughtLineClasses(inner, msg);
@@ -980,33 +886,24 @@
 
   function updateThoughtEl(el, msg) {
     const inner = el.querySelector('.thought-line');
-    if (inner) {
-      syncThoughtLineClasses(inner, msg);
-      inner.textContent = formatThoughtLine(msg);
-    }
+    if (inner) { syncThoughtLineClasses(inner, msg); inner.textContent = formatThoughtLine(msg); }
   }
 
   // --- Plan block ---
 
   function emitClickAction(selectorPath, actionLabel) {
-    socket.emit('command:click_action', {
-      commandId: newCommandId(),
-      selectorPath,
-      actionLabel,
-    });
+    socket.emit('command:click_action', { commandId: newCommandId(), selectorPath, actionLabel });
   }
 
   function buildPlanFullContent(planData) {
     const content = document.createElement('div');
     content.className = 'plan-card plan-card-modal';
-
     if (Array.isArray(planData.todos) && planData.todos.length > 0) {
       const completed = planData.todos.filter((todo) => todo.status === 'completed').length;
       const summary = document.createElement('div');
       summary.className = 'plan-progress';
       summary.textContent = `To-dos ${completed}/${planData.todos.length}`;
       content.appendChild(summary);
-
       const todoList = document.createElement('div');
       todoList.className = 'plan-todo-list';
       planData.todos.forEach((todo) => {
@@ -1023,7 +920,6 @@
       });
       content.appendChild(todoList);
     }
-
     if (planData.bodyHtml) {
       const body = document.createElement('div');
       body.className = 'plan-description markdown-body';
@@ -1031,7 +927,6 @@
       normalizeMarkdownCodeBlocks(body);
       content.appendChild(body);
     }
-
     return content;
   }
 
@@ -1039,9 +934,7 @@
     if (planData) return buildPlanFullContent(planData);
     const modalMsg = {
       ...msg,
-      actions: Array.isArray(msg.actions)
-        ? msg.actions.filter((action) => action.type !== 'view_plan')
-        : msg.actions,
+      actions: Array.isArray(msg.actions) ? msg.actions.filter((action) => action.type !== 'view_plan') : msg.actions,
     };
     const content = buildPlanCard(modalMsg);
     content.classList.add('plan-card-modal');
@@ -1061,9 +954,7 @@
     if (!msg.label || !activePlanModal || activePlanModal.id !== msg.id) return;
     activePlanModal.loading = true;
     const result = await sendCommandAwaitResult('command:get_plan_full', {
-      commandId: newCommandId(),
-      type: 'get_plan_full',
-      planLabel: msg.label,
+      commandId: newCommandId(), type: 'get_plan_full', planLabel: msg.label,
     });
     if (!activePlanModal || activePlanModal.id !== msg.id) return;
     activePlanModal.loading = false;
@@ -1089,9 +980,7 @@
     const current = (state.messages || []).find((msg) => msg.type === 'plan' && msg.id === activePlanModal.id);
     if (current) {
       renderPlanModal(current);
-      if (current.label && !activePlanModal.fullData && !activePlanModal.loading) {
-        loadFullPlanIntoModal(current);
-      }
+      if (current.label && !activePlanModal.fullData && !activePlanModal.loading) loadFullPlanIntoModal(current);
     }
   }
 
@@ -1100,33 +989,23 @@
       if (msg.model) showToast(`Plan model: ${msg.model}`, 'success');
       return;
     }
-
     const commandId = newCommandId();
     const result = await sendCommandAwaitResult('command:get_plan_model_options', {
-      commandId,
-      type: 'get_plan_model_options',
-      selectorPath: msg.modelDropdownSelectorPath,
+      commandId, type: 'get_plan_model_options', selectorPath: msg.modelDropdownSelectorPath,
     });
-
     const options = Array.isArray(result.data?.options) ? result.data.options : [];
     if (!result.ok || options.length === 0) {
       emitClickAction(msg.modelDropdownSelectorPath);
       if (!result.ok) showToast(result.error || 'Could not load plan models', 'error');
       return;
     }
-
-    activePlanModelContext = {
-      selectorPath: msg.modelDropdownSelectorPath,
-      title: msg.title || 'Plan',
-      options,
-    };
+    activePlanModelContext = { selectorPath: msg.modelDropdownSelectorPath, title: msg.title || 'Plan', options };
     openSheet('plan-model');
   }
 
   function buildPlanCard(msg) {
     const card = document.createElement('div');
     card.className = 'plan-card plan-card-widget';
-
     if (msg.label) {
       const header = document.createElement('div');
       header.className = 'plan-widget-header';
@@ -1141,12 +1020,10 @@
       header.appendChild(fn);
       card.appendChild(header);
     }
-
     const title = document.createElement('div');
     title.className = 'plan-title';
     title.textContent = msg.title;
     card.appendChild(title);
-
     if (msg.descriptionHtml) {
       const desc = document.createElement('div');
       desc.className = 'plan-description markdown-body';
@@ -1159,7 +1036,6 @@
       desc.textContent = msg.description;
       card.appendChild(desc);
     }
-
     if (msg.todos && msg.todos.length > 0) {
       const todoList = document.createElement('div');
       todoList.className = 'plan-todo-list';
@@ -1177,14 +1053,12 @@
       });
       card.appendChild(todoList);
     }
-
     if (msg.todosMoreCount && msg.todosMoreCount > 0) {
       const more = document.createElement('div');
       more.className = 'plan-todos-more';
       more.textContent = `${msg.todosMoreCount} more`;
       card.appendChild(more);
     }
-
     if (msg.todosTotal > 0) {
       const progress = document.createElement('div');
       progress.className = 'plan-progress';
@@ -1202,12 +1076,10 @@
       progress.appendChild(progressText);
       card.appendChild(progress);
     }
-
     const hasActions = (msg.actions && msg.actions.length > 0) || msg.modelDropdownSelectorPath || msg.model;
     if (hasActions) {
       const toolbar = document.createElement('div');
       toolbar.className = 'plan-actions-toolbar';
-
       const left = document.createElement('div');
       left.className = 'plan-actions-left';
       if (msg.actions) {
@@ -1222,7 +1094,6 @@
         }
       }
       toolbar.appendChild(left);
-
       const center = document.createElement('div');
       center.className = 'plan-actions-center';
       if (msg.modelDropdownSelectorPath) {
@@ -1246,7 +1117,6 @@
         center.appendChild(badge);
       }
       toolbar.appendChild(center);
-
       const right = document.createElement('div');
       right.className = 'plan-actions-right';
       if (msg.actions) {
@@ -1263,7 +1133,6 @@
       toolbar.appendChild(right);
       card.appendChild(toolbar);
     }
-
     return card;
   }
 
@@ -1280,7 +1149,7 @@
     if (oldCard) el.replaceChild(buildPlanCard(msg), oldCard);
   }
 
-  // --- Standalone todo list (matches Telegram §3.9) ---
+  // --- Standalone todo list ---
 
   function createTodoListEl(msg) {
     const el = document.createElement('div');
@@ -1299,8 +1168,7 @@
       row.className = 'todo-list-card-row';
       const icon = document.createElement('span');
       icon.className = 'todo-list-card-icon';
-      icon.textContent = todo.status === 'completed' ? '✅'
-        : todo.status === 'in_progress' ? '🔵' : '⚪';
+      icon.textContent = todo.status === 'completed' ? '✓' : todo.status === 'in_progress' ? '●' : '○';
       const tx = document.createElement('span');
       tx.className = 'todo-list-card-text';
       tx.textContent = todo.text;
@@ -1320,7 +1188,7 @@
     if (newCard && oldCard) el.replaceChild(newCard, oldCard);
   }
 
-  // --- Run command / tool inline actions (Skip, Run, Allow) ---
+  // --- Run command / tool inline actions ---
 
   function appendRunStyleActionButtons(container, actions) {
     actions.forEach(function (action) {
@@ -1332,9 +1200,7 @@
       btn.textContent = action.label;
       btn.addEventListener('click', function () {
         socket.emit('command:click_action', {
-          commandId: newCommandId(),
-          selectorPath: action.selectorPath,
-          actionLabel: action.label,
+          commandId: newCommandId(), selectorPath: action.selectorPath, actionLabel: action.label,
         });
       });
       container.appendChild(btn);
@@ -1345,10 +1211,8 @@
     const el = document.createElement('div');
     el.className = 'chat-el el-run-command';
     el.dataset.id = msg.id;
-
     const card = document.createElement('div');
     card.className = 'run-card';
-
     const header = document.createElement('div');
     header.className = 'run-header';
     const desc = document.createElement('span');
@@ -1362,7 +1226,6 @@
       header.appendChild(cand);
     }
     card.appendChild(header);
-
     const cmdBlock = document.createElement('div');
     cmdBlock.className = 'run-command-block';
     const prompt = document.createElement('span');
@@ -1374,14 +1237,12 @@
     cmdText.textContent = msg.command;
     cmdBlock.appendChild(cmdText);
     card.appendChild(cmdBlock);
-
     if (msg.actions && msg.actions.length > 0) {
       const actionsRow = document.createElement('div');
       actionsRow.className = 'run-actions-row';
       appendRunStyleActionButtons(actionsRow, msg.actions);
       card.appendChild(actionsRow);
     }
-
     el.appendChild(card);
     return el;
   }
@@ -1403,7 +1264,6 @@
     const el = document.createElement('div');
     el.className = 'chat-el el-loading';
     el.dataset.id = msg.id;
-
     const dots = document.createElement('div');
     dots.className = 'loading-dots';
     for (let i = 0; i < 3; i++) {
@@ -1425,7 +1285,7 @@
     return el;
   }
 
-  // --- Sanitize HTML (strip scripts, event handlers) ---
+  // --- Sanitize HTML ---
 
   function sanitizeHtml(html) {
     const tmp = document.createElement('div');
@@ -1436,14 +1296,9 @@
       .forEach((el) => el.remove());
     tmp.querySelectorAll('*').forEach(el => {
       for (const attr of Array.from(el.attributes)) {
-        if (attr.name.startsWith('on') || attr.name === 'srcdoc') {
-          el.removeAttribute(attr.name);
-        }
+        if (attr.name.startsWith('on') || attr.name === 'srcdoc') el.removeAttribute(attr.name);
       }
-      if (el.tagName === 'A') {
-        el.setAttribute('target', '_blank');
-        el.setAttribute('rel', 'noopener noreferrer');
-      }
+      if (el.tagName === 'A') { el.setAttribute('target', '_blank'); el.setAttribute('rel', 'noopener noreferrer'); }
     });
     return tmp.innerHTML;
   }
@@ -1454,47 +1309,24 @@
       let out = '';
       function walk(node) {
         if (!node) return;
-        if (node.nodeType === Node.TEXT_NODE) {
-          out += node.textContent || '';
-          return;
-        }
+        if (node.nodeType === Node.TEXT_NODE) { out += node.textContent || ''; return; }
         if (node.nodeType !== Node.ELEMENT_NODE) return;
         const tag = (node.tagName || '').toLowerCase();
-        if (tag === 'br') {
-          out += '\n';
-          return;
-        }
+        if (tag === 'br') { out += '\n'; return; }
         const before = out.length;
         node.childNodes.forEach(walk);
-        const isLineLike =
-          tag === 'div' ||
-          tag === 'p' ||
-          tag === 'li' ||
-          node.matches?.('[data-line], .line');
-        if (isLineLike && out.length > before && !out.endsWith('\n')) {
-          out += '\n';
-        }
+        const isLineLike = tag === 'div' || tag === 'p' || tag === 'li' || node.matches?.('[data-line], .line');
+        if (isLineLike && out.length > before && !out.endsWith('\n')) out += '\n';
       }
       walk(el);
       return out.replace(/\n{3,}/g, '\n\n').replace(/\s+\n/g, '\n').trimEnd();
     }
-
     root.querySelectorAll('code').forEach((codeEl) => {
       if (codeEl.closest('pre')) return;
-      if (
-        codeEl.className.includes('md-inline-') ||
-        codeEl.closest('p, li, a, h1, h2, h3, h4, h5, h6')
-      ) {
-        return;
-      }
-
+      if (codeEl.className.includes('md-inline-') || codeEl.closest('p, li, a, h1, h2, h3, h4, h5, h6')) return;
       const text = extractStructuredCodeText(codeEl);
-      const looksBlockLike =
-        text.includes('\n') ||
-        !!codeEl.querySelector('br,[data-line],.line,div,p') ||
-        /(?:^|\s)(?:language-|shiki)/.test(codeEl.className);
+      const looksBlockLike = text.includes('\n') || !!codeEl.querySelector('br,[data-line],.line,div,p') || /(?:^|\s)(?:language-|shiki)/.test(codeEl.className);
       if (!looksBlockLike) return;
-
       const pre = document.createElement('pre');
       const code = document.createElement('code');
       code.className = codeEl.className || '';
@@ -1511,15 +1343,12 @@
       $approvalBar.classList.remove('hidden');
       const approval = state.pendingApprovals[0];
       $approvalDesc.textContent = approval.description || 'Action needs approval';
-
       const approveAction = approval.actions.find(a => a.type === 'approve' || a.type === 'approve_all');
       const rejectAction = approval.actions.find(a => a.type === 'reject');
-
       $btnApprove.disabled = !approveAction;
       $btnReject.disabled = !rejectAction;
       if (approveAction) $btnApprove.textContent = approveAction.label || 'Accept';
       if (rejectAction) $btnReject.textContent = rejectAction.label || 'Reject';
-
       fireNotification(approval.description || 'Agent needs approval', 'cursor-approval');
     } else {
       $approvalBar.classList.add('hidden');
@@ -1536,13 +1365,11 @@
     $questionnaireBar.classList.remove('hidden');
     $questionnaireStepper.textContent = q.totalLabel || '';
     $btnQContinue.disabled = q.continueDisabled;
-
     $questionnaireQuestions.innerHTML = '';
     for (var i = 0; i < q.questions.length; i++) {
       var question = q.questions[i];
       var qDiv = document.createElement('div');
       qDiv.className = 'questionnaire-question' + (question.isActive ? ' questionnaire-question-active' : '');
-
       var labelDiv = document.createElement('div');
       labelDiv.className = 'questionnaire-question-label';
       var numSpan = document.createElement('span');
@@ -1553,7 +1380,6 @@
       labelDiv.appendChild(numSpan);
       labelDiv.appendChild(textSpan);
       qDiv.appendChild(labelDiv);
-
       var optionsDiv = document.createElement('div');
       optionsDiv.className = 'questionnaire-options';
       for (var j = 0; j < question.options.length; j++) {
@@ -1578,9 +1404,7 @@
           for (var s = 0; s < siblings.length; s++) siblings[s].classList.remove('questionnaire-option-selected');
           this.classList.add('questionnaire-option-selected');
           socket.emit('command:click_action', {
-            commandId: newCommandId(),
-            selectorPath: this.dataset.selectorPath,
-            actionLabel: this.dataset.label,
+            commandId: newCommandId(), selectorPath: this.dataset.selectorPath, actionLabel: this.dataset.label,
           });
           showToast('Answer sent', 'success');
         });
@@ -1589,7 +1413,6 @@
       qDiv.appendChild(optionsDiv);
       $questionnaireQuestions.appendChild(qDiv);
     }
-
     fireNotification('Agent has questions for you', 'cursor-questionnaire');
   }
 
@@ -1617,14 +1440,14 @@
     state.messages.forEach(function (msg) {
       if (notifiedMessageIds.has(msg.id)) return;
       var text = null;
-
       if (msg.type === 'run_command' && msg.actions && msg.actions.length > 0) {
         text = (msg.description || 'Run command') + ': ' + (msg.command || '').substring(0, 80);
       } else if (msg.type === 'tool' && msg.actions && msg.actions.length > 0) {
         var detail = msg.details || msg.filename || '';
         text = (msg.action || 'Tool') + (detail ? ' ' + detail : '') + ' needs approval';
+      } else if (msg.type === 'assistant' && msg.text) {
+        text = msg.text.substring(0, 120);
       }
-
       if (text) {
         notifiedMessageIds.add(msg.id);
         fireNotification(text, 'cursor-action-' + msg.id);
@@ -1632,7 +1455,15 @@
     });
   }
 
-  // --- Window rendering ---
+  // Request notification permission on first interaction
+  document.addEventListener('click', function requestPerm() {
+    if (typeof Notification !== 'undefined' && notificationPermission === 'default') {
+      Notification.requestPermission().then(function (p) { notificationPermission = p; });
+    }
+    document.removeEventListener('click', requestPerm);
+  }, { once: true });
+
+  // --- Window rendering (persisted order, green dot for recent) ---
 
   function renderWindows() {
     const windows = state.windows || [];
@@ -1642,38 +1473,62 @@
     }
     $windowBar.classList.remove('hidden');
 
+    // Sort: recent (bumped in last 5min) first, then by stored order, then by server order
+    const recentMap = getRecentMap(WINDOW_RECENT_KEY);
+    const storedOrder = getStoredOrder(WINDOW_ORDER_KEY);
+    const orderedWindows = [...windows].sort((a, b) => {
+      const aRecent = recentMap[a.id] ?? 0;
+      const bRecent = recentMap[b.id] ?? 0;
+      if (aRecent && bRecent) return bRecent - aRecent;
+      if (aRecent) return -1;
+      if (bRecent) return 1;
+      const aIdx = storedOrder.indexOf(a.id);
+      const bIdx = storedOrder.indexOf(b.id);
+      if (aIdx === -1 && bIdx === -1) return 0;
+      if (aIdx === -1) return 1;
+      if (bIdx === -1) return -1;
+      return aIdx - bIdx;
+    });
+
+    // Persist new order
+    saveStoredOrder(WINDOW_ORDER_KEY, orderedWindows.map(w => w.id));
+
     const existingBtns = $windowList.querySelectorAll('.window-item');
     const existingMap = new Map();
     existingBtns.forEach(b => existingMap.set(b.dataset.id, b));
+    const newIds = new Set(orderedWindows.map(w => w.id));
+    existingBtns.forEach(b => { if (!newIds.has(b.dataset.id)) b.remove(); });
 
-    const newIds = new Set(windows.map(w => w.id));
-    existingBtns.forEach(b => {
-      if (!newIds.has(b.dataset.id)) b.remove();
-    });
-
-    windows.forEach((win) => {
+    orderedWindows.forEach((win, i) => {
       let btn = existingMap.get(win.id);
       if (!btn) {
         btn = document.createElement('button');
         btn.className = 'window-item';
         btn.dataset.id = win.id;
         btn.addEventListener('click', () => {
-          socket.emit('command:switch_window', {
-            commandId: newCommandId(),
-            windowId: win.id,
-          });
+          socket.emit('command:switch_window', { commandId: newCommandId(), windowId: win.id });
           showToast('Switching window...', 'success');
         });
+      }
+      const isActive = win.id === state.activeWindowId;
+      const isRecent = !!recentMap[win.id];
+      btn.className = 'window-item' + (isActive ? ' active' : '') + (isRecent ? ' recent' : '');
+      btn.textContent = (isRecent ? '\u25CF ' : '') + (win.title || 'Window');
+      if (btn.parentNode !== $windowList || [...$windowList.children].indexOf(btn) !== i) {
         $windowList.appendChild(btn);
       }
-
-      const isActive = win.id === state.activeWindowId;
-      btn.className = 'window-item' + (isActive ? ' active' : '');
-      btn.textContent = win.title || 'Cursor';
     });
+
+    // Reorder DOM to match sorted order
+    const fragment = document.createDocumentFragment();
+    orderedWindows.forEach(win => {
+      const btn = $windowList.querySelector('.window-item[data-id="' + CSS.escape(win.id) + '"]');
+      if (btn) fragment.appendChild(btn);
+    });
+    $windowList.appendChild(fragment);
   }
 
-  // --- Tab rendering ---
+  // --- Tab rendering (persisted order, green dot for recent) ---
 
   function renderTabs() {
     const tabs = state.chatTabs || [];
@@ -1683,16 +1538,30 @@
     }
     $tabBar.classList.remove('hidden');
 
+    const recentMap = getRecentMap(TAB_RECENT_KEY);
+    const storedOrder = getStoredOrder(TAB_ORDER_KEY);
+    const orderedTabs = [...tabs].sort((a, b) => {
+      const aRecent = recentMap[a.title] ?? 0;
+      const bRecent = recentMap[b.title] ?? 0;
+      if (aRecent && bRecent) return bRecent - aRecent;
+      if (aRecent) return -1;
+      if (bRecent) return 1;
+      const aIdx = storedOrder.indexOf(a.title);
+      const bIdx = storedOrder.indexOf(b.title);
+      if (aIdx === -1 && bIdx === -1) return 0;
+      if (aIdx === -1) return 1;
+      if (bIdx === -1) return -1;
+      return aIdx - bIdx;
+    });
+    saveStoredOrder(TAB_ORDER_KEY, orderedTabs.map(t => t.title));
+
     const existingBtns = $tabList.querySelectorAll('.tab-item');
     const existingMap = new Map();
     existingBtns.forEach(b => existingMap.set(b.dataset.title, b));
+    const newTitles = new Set(orderedTabs.map(t => t.title));
+    existingBtns.forEach(b => { if (!newTitles.has(b.dataset.title)) b.remove(); });
 
-    const newTitles = new Set(tabs.map(t => t.title));
-    existingBtns.forEach(b => {
-      if (!newTitles.has(b.dataset.title)) b.remove();
-    });
-
-    tabs.forEach((tab, i) => {
+    orderedTabs.forEach((tab, i) => {
       let btn = existingMap.get(tab.title);
       if (!btn) {
         btn = document.createElement('button');
@@ -1700,17 +1569,22 @@
         btn.dataset.title = tab.title;
         btn.addEventListener('click', () => {
           socket.emit('command:switch_tab', {
-            commandId: newCommandId(),
-            tabTitle: tab.title,
-            selectorPath: tab.selectorPath,
+            commandId: newCommandId(), tabTitle: tab.title, selectorPath: tab.selectorPath,
           });
         });
-        $tabList.appendChild(btn);
       }
-
-      btn.className = 'tab-item' + (tab.isActive ? ' active' : '');
-      btn.textContent = tab.title || `Chat ${i + 1}`;
+      const isRecent = !!recentMap[tab.title];
+      btn.className = 'tab-item' + (tab.isActive ? ' active' : '') + (isRecent ? ' recent' : '');
+      btn.textContent = (isRecent ? '\u25CF ' : '') + (tab.title || 'Chat');
     });
+
+    // Reorder DOM
+    const fragment = document.createDocumentFragment();
+    orderedTabs.forEach(tab => {
+      const btn = $tabList.querySelector('.tab-item[data-title="' + CSS.escape(tab.title) + '"]');
+      if (btn) fragment.appendChild(btn);
+    });
+    $tabList.appendChild(fragment);
   }
 
   function escapeHtml(str) {
@@ -1722,23 +1596,13 @@
   // --- Mode / Model rendering ---
 
   const MODE_ICONS = {
-    agent: '\u221E',
-    plan: '\u2611',
-    debug: '\uD83D\uDC1B',
-    chat: '\uD83D\uDCAC',
+    agent: '\u221E', plan: '\u2611', debug: '\uD83D\uDC1B', chat: '\uD83D\uDCAC',
   };
-
-  const MODE_LABELS = {
-    agent: 'Agent',
-    plan: 'Plan',
-    debug: 'Debug',
-    chat: 'Ask',
-  };
+  const MODE_LABELS = { agent: 'Agent', plan: 'Plan', debug: 'Debug', chat: 'Ask' };
 
   function renderModeModel() {
     const mode = state.mode || { current: 'agent', available: [] };
     const model = state.model || { current: 'Auto', currentId: '' };
-
     $pillModeIcon.textContent = MODE_ICONS[mode.current] || '';
     $pillModeText.textContent = MODE_LABELS[mode.current] || mode.current;
     $pillModelText.textContent = model.current || 'Auto';
@@ -1754,24 +1618,17 @@
     closeSheet();
     activeSheet = type;
     $sheetOverlay.classList.remove('hidden');
-
     if (type === 'mode') {
       $sheetMode.classList.remove('hidden');
       renderModeSheet();
     } else if (type === 'model') {
       $sheetModel.classList.remove('hidden');
-      if (cachedModelOptions) {
-        renderModelSheet(cachedModelOptions);
-      } else {
-        renderModelSheetLoading();
-      }
+      if (cachedModelOptions) renderModelSheet(cachedModelOptions);
+      else renderModelSheetLoading();
       fetchModelOptions().then(options => {
         if (activeSheet !== 'model') return;
-        if (options) {
-          renderModelSheet(options);
-        } else if (!cachedModelOptions) {
-          renderModelSheet(null);
-        }
+        if (options) renderModelSheet(options);
+        else if (!cachedModelOptions) renderModelSheet(null);
       });
     } else if (type === 'plan-model') {
       $sheetPlanModel.classList.remove('hidden');
@@ -1796,14 +1653,10 @@
       { id: 'chat', label: 'Ask', icon: '\uD83D\uDCAC' },
     ];
     const current = (state.mode || {}).current || 'agent';
-
     modes.forEach(m => {
       const btn = document.createElement('button');
       btn.className = 'sheet-item' + (m.id === current ? ' selected' : '');
-      btn.innerHTML =
-        `<span class="sheet-item-icon">${m.icon}</span>` +
-        `<span>${escapeHtml(m.label)}</span>` +
-        (m.id === current ? '<span class="sheet-item-check">\u2713</span>' : '');
+      btn.innerHTML = `<span class="sheet-item-icon">${m.icon}</span><span>${escapeHtml(m.label)}</span>` + (m.id === current ? '<span class="sheet-item-check">\u2713</span>' : '');
       btn.addEventListener('click', () => {
         socket.emit('command:set_mode', { commandId: newCommandId(), modeId: m.id });
         closeSheet();
@@ -1817,10 +1670,7 @@
 
   async function fetchModelOptions() {
     const commandId = newCommandId();
-    const result = await sendCommandAwaitResult('command:get_model_options', {
-      commandId,
-      type: 'get_model_options',
-    });
+    const result = await sendCommandAwaitResult('command:get_model_options', { commandId, type: 'get_model_options' });
     if (result.ok && Array.isArray(result.data?.options)) {
       cachedModelOptions = result.data.options;
       return result.data.options;
@@ -1830,7 +1680,6 @@
 
   function renderModelSheet(options) {
     $sheetModelList.innerHTML = '';
-
     if (!options || options.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'sheet-empty';
@@ -1838,21 +1687,16 @@
       $sheetModelList.appendChild(empty);
       return;
     }
-
     const currentId = ((state.model || {}).currentId || '');
     const currentName = ((state.model || {}).current || '').toLowerCase();
-
     options.forEach(opt => {
-      const isSelected = (currentId && opt.id === currentId) || opt.selected ||
-        currentName === opt.label.toLowerCase();
+      const isSelected = (currentId && opt.id === currentId) || opt.selected || currentName === opt.label.toLowerCase();
       const btn = document.createElement('button');
       btn.className = 'sheet-item' + (isSelected ? ' selected' : '');
-
       let inner = '<span class="sheet-item-label">' + escapeHtml(opt.label) + '</span>';
       const right = [];
       if (isSelected) right.push('<span class="sheet-item-check">\u2713</span>');
       inner += '<span class="sheet-item-right">' + right.join('') + '</span>';
-
       btn.innerHTML = inner;
       btn.addEventListener('click', () => {
         socket.emit('command:set_model', { commandId: newCommandId(), modelId: opt.id });
@@ -1876,24 +1720,15 @@
     const ctx = activePlanModelContext;
     $sheetPlanModelHeader.textContent = ctx && ctx.title ? `Plan Model · ${ctx.title}` : 'Plan Model';
     if (!ctx || !Array.isArray(ctx.options) || ctx.options.length === 0) return;
-
     ctx.options.forEach((opt) => {
       const btn = document.createElement('button');
       btn.className = 'sheet-item' + (opt.selected ? ' selected' : '');
-      btn.innerHTML =
-        `<span class="sheet-item-label">${escapeHtml(opt.label)}</span>` +
-        `<span class="sheet-item-right">${opt.selected ? '<span class="sheet-item-check">\u2713</span>' : ''}</span>`;
+      btn.innerHTML = `<span class="sheet-item-label">${escapeHtml(opt.label)}</span><span class="sheet-item-right">${opt.selected ? '<span class="sheet-item-check">\u2713</span>' : ''}</span>`;
       btn.addEventListener('click', async () => {
         const result = await sendCommandAwaitResult('command:set_plan_model', {
-          commandId: newCommandId(),
-          type: 'set_plan_model',
-          selectorPath: ctx.selectorPath,
-          planModelId: opt.id,
+          commandId: newCommandId(), type: 'set_plan_model', selectorPath: ctx.selectorPath, planModelId: opt.id,
         });
-        if (!result.ok) {
-          showToast(result.error || 'Could not set plan model', 'error');
-          return;
-        }
+        if (!result.ok) { showToast(result.error || 'Could not set plan model', 'error'); return; }
         closeSheet();
         showToast(`Plan model: ${opt.label}`, 'success');
       });

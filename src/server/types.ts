@@ -344,6 +344,8 @@ export interface ServerConfig {
   selectorsPath: string;
   logLevel: 'debug' | 'info' | 'warn' | 'error';
   webappPassword: string;
+  /** Pairing-code auth. Always on unless explicitly disabled. */
+  pairingEnabled: boolean;
   windowTitleQualifier: boolean;
   dataDir: string;
   telegram: TelegramConfig;
