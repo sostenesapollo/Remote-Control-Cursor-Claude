@@ -289,7 +289,7 @@ export class ServerManager extends EventEmitter {
     const port = config.get<number>('serverPort', 3000);
     const host = config.get<string>('serverHost', '127.0.0.1');
     const displayHost = host === '0.0.0.0' ? 'localhost' : host;
-    const url = `http://${displayHost}:${port}`;
+    const url = `http://${displayHost}:${port}/app`;
     this.outputChannel.info(`[${this.windowName}] Opening web client: ${url}`);
 
     if (process.platform === 'win32') {

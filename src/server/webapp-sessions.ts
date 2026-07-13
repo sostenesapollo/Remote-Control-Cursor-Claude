@@ -4,7 +4,8 @@ import { join } from 'path';
 /** HttpOnly cookie name; must match client expectations only for non-HttpOnly flows (we use server-side parse). */
 export const WEBAPP_SESSION_COOKIE = 'cursor_remote_session';
 
-const MAX_SESSIONS = 128;
+/** Soft cap so disk stays bounded; oldest tokens drop only when exceeded. */
+const MAX_SESSIONS = 2048;
 const TOKEN_HEX_LEN = 64; // randomBytes(32).toString('hex')
 
 export interface WebappSessionStore {

@@ -5,10 +5,6 @@
 
   const AUTH_TOKEN_KEY = 'cursor-remote-token';
   const PAIRED_KEY = 'cursor-remote-paired';
-  const TAB_ORDER_KEY = 'cursor-remote-tab-order';
-  const WINDOW_ORDER_KEY = 'cursor-remote-window-order';
-  const TAB_RECENT_KEY = 'cursor-remote-tab-recent';
-  const WINDOW_RECENT_KEY = 'cursor-remote-window-recent';
 
   const defaultState = {
     connected: false,
@@ -48,33 +44,6 @@
   function setPaired(v) {
     if (v) localStorage.setItem(PAIRED_KEY, '1');
     else localStorage.removeItem(PAIRED_KEY);
-  }
-
-  function getStoredOrder(key) {
-    try {
-      const raw = localStorage.getItem(key);
-      return raw ? JSON.parse(raw) : [];
-    } catch { return []; }
-  }
-
-  function saveStoredOrder(key, ids) {
-    try { localStorage.setItem(key, JSON.stringify(ids)); } catch { /* ignore */ }
-  }
-
-  function getRecentMap(key) {
-    try {
-      const raw = localStorage.getItem(key);
-      return raw ? JSON.parse(raw) : {};
-    } catch { return {}; }
-  }
-
-  function bumpRecent(key, id) {
-    const map = getRecentMap(key);
-    map[id] = Date.now();
-    // Prune entries older than 5 minutes
-    const cutoff = Date.now() - 5 * 60 * 1000;
-    for (const k in map) if (map[k] < cutoff) delete map[k];
-    try { localStorage.setItem(key, JSON.stringify(map)); } catch { /* ignore */ }
   }
 
   function newCommandId() {
@@ -168,6 +137,8 @@
   }
 
   async function init() {
+    registerServiceWorker();
+    setupInstallPrompt();
     setupOnboarding();
     const ok = await checkAuth();
     if (!ok) {
@@ -175,6 +146,69 @@
       return;
     }
     bootstrap();
+  }
+
+  function registerServiceWorker() {
+    if (typeof navigator.serviceWorker?.register !== 'function') return;
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('/app/sw.js', { scope: '/app/' }).catch((err) => {
+        console.warn('[pwa] service worker registration failed', err);
+      });
+    });
+  }
+
+  function setupInstallPrompt() {
+    const DISMISS_KEY = 'cursor-remote-install-dismissed';
+    const $banner = document.getElementById('install-banner');
+    const $btn = document.getElementById('install-banner-btn');
+    const $dismiss = document.getElementById('install-banner-dismiss');
+    if (!$banner || !$btn || !$dismiss) return;
+
+    const isStandalone =
+      window.matchMedia('(display-mode: standalone)').matches ||
+      window.navigator.standalone === true;
+    if (isStandalone) return;
+    if (localStorage.getItem(DISMISS_KEY) === '1') return;
+
+    let deferredPrompt = null;
+
+    window.addEventListener('beforeinstallprompt', (e) => {
+      e.preventDefault();
+      deferredPrompt = e;
+      $banner.classList.remove('hidden');
+    });
+
+    $btn.addEventListener('click', async () => {
+      if (!deferredPrompt) return;
+      $banner.classList.add('hidden');
+      deferredPrompt.prompt();
+      try {
+        await deferredPrompt.userChoice;
+      } catch (_) { /* ignore */ }
+      deferredPrompt = null;
+    });
+
+    $dismiss.addEventListener('click', () => {
+      localStorage.setItem(DISMISS_KEY, '1');
+      $banner.classList.add('hidden');
+    });
+
+    window.addEventListener('appinstalled', () => {
+      deferredPrompt = null;
+      $banner.classList.add('hidden');
+    });
+
+    // iOS Safari: no beforeinstallprompt — show a how-to hint once
+    const isIos = /iphone|ipad|ipod/i.test(navigator.userAgent);
+    const isSafari = /safari/i.test(navigator.userAgent) && !/crios|fxios|edgios/i.test(navigator.userAgent);
+    if (isIos && isSafari && !localStorage.getItem(DISMISS_KEY)) {
+      const text = $banner.querySelector('.install-banner-text');
+      if (text) {
+        text.innerHTML = '<strong>Add to Home Screen</strong><span>Tap Share, then “Add to Home Screen”</span>';
+      }
+      $btn.classList.add('hidden');
+      $banner.classList.remove('hidden');
+    }
   }
 
   function bootstrap() {
@@ -187,6 +221,8 @@
   const notifiedMessageIds = new Set();
   let activePlanModal = null;
   let activePlanModelContext = null;
+  let activeSheet = null;
+  let lastActiveTabTitle = '';
   const pendingCommandResults = new Map();
 
   function isNearMessagesBottom() {
@@ -207,9 +243,8 @@
   const $emptyState = document.getElementById('empty-state');
   const $emptyPrimary = document.getElementById('empty-state-primary');
   const $emptyHint = document.getElementById('empty-state-hint');
-  const $statusIcon = document.getElementById('agent-status-icon');
+  const $activityStrip = document.getElementById('agent-activity-strip');
   const $statusText = document.getElementById('agent-status-text');
-  const $btnUnpair = document.getElementById('btn-unpair');
   const $approvalBar = document.getElementById('approval-bar');
   const $approvalDesc = document.getElementById('approval-desc');
   const $btnApprove = document.getElementById('btn-approve');
@@ -224,8 +259,6 @@
   const $btnSend = document.getElementById('btn-send');
   const $toastContainer = document.getElementById('toast-container');
 
-  const $windowBar = document.getElementById('window-bar');
-  const $windowList = document.getElementById('window-list');
   const $tabBar = document.getElementById('tab-bar');
   const $tabList = document.getElementById('tab-list');
   const $btnNewChat = document.getElementById('btn-new-chat');
@@ -234,6 +267,11 @@
   const $pillModeText = document.getElementById('pill-mode-text');
   const $pillModel = document.getElementById('pill-model');
   const $pillModelText = document.getElementById('pill-model-text');
+  const $pillWindow = document.getElementById('pill-window');
+  const $pillWindowText = document.getElementById('pill-window-text');
+  const $windowSync = document.getElementById('window-sync');
+  const $connChip = document.getElementById('conn-chip');
+  const $connChipText = document.getElementById('conn-chip-text');
   const $sheetOverlay = document.getElementById('sheet-overlay');
   const $sheetMode = document.getElementById('sheet-mode');
   const $sheetModeList = document.getElementById('sheet-mode-list');
@@ -242,11 +280,226 @@
   const $sheetPlanModel = document.getElementById('sheet-plan-model');
   const $sheetPlanModelHeader = document.getElementById('sheet-plan-model-header');
   const $sheetPlanModelList = document.getElementById('sheet-plan-model-list');
+  const $sheetWindow = document.getElementById('sheet-window');
+  const $sheetWindowList = document.getElementById('sheet-window-list');
+  const $sheetConnection = document.getElementById('sheet-connection');
+  const $sheetConnectionBody = document.getElementById('sheet-connection-body');
   const $planModalOverlay = document.getElementById('plan-modal-overlay');
   const $planModalLabel = document.getElementById('plan-modal-label');
   const $planModalTitle = document.getElementById('plan-modal-title');
   const $planModalBody = document.getElementById('plan-modal-body');
   const $planModalClose = document.getElementById('plan-modal-close');
+
+  // --- Per-window session cache (memory + IndexedDB) ---
+  const memWindowCache = new Map();
+  let windowCacheDb = null;
+  let windowSyncStatus = 'live'; // live | syncing | cached
+  let pendingSwitchId = null;
+  let pendingSwitchPrevId = null;
+
+  function openWindowCacheDb() {
+    if (!('indexedDB' in window)) return Promise.resolve(null);
+    return new Promise((resolve) => {
+      try {
+        const req = indexedDB.open('cursor-remote-windows', 1);
+        req.onupgradeneeded = () => {
+          const db = req.result;
+          if (!db.objectStoreNames.contains('sessions')) {
+            db.createObjectStore('sessions', { keyPath: 'windowId' });
+          }
+        };
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => resolve(null);
+      } catch (_) {
+        resolve(null);
+      }
+    });
+  }
+
+  function idbPutSession(snap) {
+    if (!windowCacheDb || !snap || !snap.windowId) return;
+    try {
+      const tx = windowCacheDb.transaction('sessions', 'readwrite');
+      tx.objectStore('sessions').put(snap);
+    } catch (_) { /* ignore quota / closed */ }
+  }
+
+  function idbLoadAllSessions() {
+    if (!windowCacheDb) return Promise.resolve([]);
+    return new Promise((resolve) => {
+      try {
+        const tx = windowCacheDb.transaction('sessions', 'readonly');
+        const req = tx.objectStore('sessions').getAll();
+        req.onsuccess = () => resolve(Array.isArray(req.result) ? req.result : []);
+        req.onerror = () => resolve([]);
+      } catch (_) {
+        resolve([]);
+      }
+    });
+  }
+
+  function captureWindowSnapshot(windowId) {
+    const win = (state.windows || []).find((w) => w.id === windowId);
+    return {
+      windowId,
+      windowTitle: (win && win.title) || '',
+      messages: state.messages || [],
+      chatTabs: state.chatTabs || [],
+      pendingApprovals: state.pendingApprovals || [],
+      agentStatus: state.agentStatus || 'idle',
+      agentActivityText: state.agentActivityText || null,
+      agentActivityLive: !!state.agentActivityLive,
+      agentActivitySource: state.agentActivitySource || 'none',
+      composerQueue: state.composerQueue || { items: [] },
+      mode: state.mode || { current: 'agent', available: [] },
+      model: state.model || { current: 'Auto', currentId: '' },
+      questionnaire: state.questionnaire || null,
+      inputAvailable: !!state.inputAvailable,
+      lastUpdated: Date.now(),
+    };
+  }
+
+  function applyWindowSnapshot(snap) {
+    if (!snap) return;
+    state.messages = Array.isArray(snap.messages) ? snap.messages : [];
+    state.chatTabs = Array.isArray(snap.chatTabs) ? snap.chatTabs : [];
+    state.pendingApprovals = Array.isArray(snap.pendingApprovals) ? snap.pendingApprovals : [];
+    state.agentStatus = snap.agentStatus || 'idle';
+    state.agentActivityText = snap.agentActivityText || null;
+    state.agentActivityLive = !!snap.agentActivityLive;
+    state.agentActivitySource = snap.agentActivitySource || 'none';
+    state.composerQueue = snap.composerQueue || { items: [] };
+    state.mode = snap.mode || { current: 'agent', available: [] };
+    state.model = snap.model || { current: 'Auto', currentId: '' };
+    state.questionnaire = snap.questionnaire || null;
+    if (typeof snap.inputAvailable === 'boolean') state.inputAvailable = snap.inputAvailable;
+  }
+
+  function clearWindowScopedState() {
+    state.messages = [];
+    state.chatTabs = [];
+    state.pendingApprovals = [];
+    state.agentStatus = 'idle';
+    state.agentActivityText = null;
+    state.agentActivityLive = false;
+    state.agentActivitySource = 'none';
+    state.composerQueue = { items: [] };
+    state.questionnaire = null;
+    state.inputAvailable = false;
+  }
+
+  function putWindowCache(windowId, snapOverride) {
+    if (!windowId && !snapOverride) return;
+    const snap = snapOverride || captureWindowSnapshot(windowId);
+    if (!snap.windowId) snap.windowId = windowId;
+    memWindowCache.set(snap.windowId, snap);
+    if (snap.windowTitle) {
+      memWindowCache.set('title:' + String(snap.windowTitle).toLowerCase(), snap);
+    }
+    idbPutSession(snap);
+  }
+
+  function lookupWindowCache(win) {
+    if (!win) return null;
+    return memWindowCache.get(win.id)
+      || (win.title ? memWindowCache.get('title:' + String(win.title).toLowerCase()) : null)
+      || null;
+  }
+
+  function ingestServerSnapshots(list) {
+    if (!Array.isArray(list)) return;
+    list.forEach((snap) => {
+      if (!snap || !snap.windowId) return;
+      const prev = memWindowCache.get(snap.windowId);
+      if (prev && prev.lastUpdated && snap.lastUpdated && prev.lastUpdated > snap.lastUpdated) return;
+      putWindowCache(snap.windowId, {
+        windowId: snap.windowId,
+        windowTitle: snap.windowTitle || '',
+        messages: Array.isArray(snap.messages) ? snap.messages : [],
+        chatTabs: Array.isArray(snap.chatTabs) ? snap.chatTabs : [],
+        pendingApprovals: Array.isArray(snap.pendingApprovals) ? snap.pendingApprovals : [],
+        agentStatus: snap.agentStatus || 'idle',
+        agentActivityText: snap.agentActivityText || null,
+        agentActivityLive: !!snap.agentActivityLive,
+        agentActivitySource: snap.agentActivitySource || 'none',
+        composerQueue: snap.composerQueue || { items: [] },
+        mode: snap.mode || { current: 'agent', available: [] },
+        model: snap.model || { current: 'Auto', currentId: '' },
+        questionnaire: snap.questionnaire || null,
+        inputAvailable: false,
+        lastUpdated: snap.lastUpdated || Date.now(),
+      });
+    });
+  }
+
+  function isSwitchableWindow(win) {
+    if (!win || win.available === false) return false;
+    const t = (win.title || '').trim();
+    if (!t) return false;
+    if (/^(cursor|welcome|getting started|settings)$/i.test(t)) return false;
+    return true;
+  }
+
+  function parseWindowGroup(title) {
+    const raw = (title || '').trim();
+    const m = raw.match(/^(.*?)\s*\[([^\]]+)\]\s*$/);
+    if (m) return { group: m[1].trim() || raw, variant: m[2].trim(), full: raw };
+    return { group: raw || 'Window', variant: '', full: raw };
+  }
+
+  function getSwitchableWindows() {
+    return (state.windows || []).filter(isSwitchableWindow);
+  }
+
+  function groupWindows(windows) {
+    const map = new Map();
+    windows.forEach((win) => {
+      const parsed = parseWindowGroup(win.title || '');
+      const key = parsed.group.toLowerCase();
+      if (!map.has(key)) map.set(key, { group: parsed.group, items: [] });
+      map.get(key).items.push({ win, variant: parsed.variant });
+    });
+    return Array.from(map.values());
+  }
+
+  function setWindowSyncStatus(next) {
+    const was = windowSyncStatus;
+    windowSyncStatus = next;
+    renderWindowSync(next === 'live' && was !== 'live');
+  }
+
+  function renderWindowSync(pulse) {
+    if (!$windowSync) return;
+    if (pulse) {
+      $windowSync.className = 'window-sync';
+      void $windowSync.offsetWidth;
+    }
+    $windowSync.className = 'window-sync window-sync-' + windowSyncStatus;
+    $windowSync.title = windowSyncStatus === 'syncing'
+      ? 'Updating…'
+      : windowSyncStatus === 'cached'
+        ? 'Cached'
+        : 'Live';
+  }
+
+  function markSwitchLive(windowId) {
+    if (pendingSwitchId && windowId && pendingSwitchId !== windowId) return;
+    pendingSwitchId = null;
+    pendingSwitchPrevId = null;
+    setWindowSyncStatus('live');
+    if (windowId) putWindowCache(windowId);
+  }
+
+  openWindowCacheDb().then((db) => {
+    windowCacheDb = db;
+    return idbLoadAllSessions();
+  }).then((sessions) => {
+    sessions.forEach((snap) => {
+      if (snap && snap.windowId && !memWindowCache.has(snap.windowId)) {
+        memWindowCache.set(snap.windowId, snap);
+      }
+    });
+  });
 
   const socket = io({
     reconnection: true,
@@ -286,22 +539,55 @@
 
   socket.on('state:full', (newState) => {
     state = { ...defaultState, ...newState };
-    // Track recent activity for tabs/windows
-    const activeTab = (state.chatTabs || []).find(t => t.isActive);
-    if (activeTab) bumpRecent(TAB_RECENT_KEY, activeTab.title);
-    if (state.activeWindowId) bumpRecent(WINDOW_RECENT_KEY, state.activeWindowId);
+    if (pendingSwitchId) {
+      if (state.activeWindowId === pendingSwitchId) markSwitchLive(pendingSwitchId);
+      else state.activeWindowId = pendingSwitchId;
+    } else if (state.activeWindowId) {
+      putWindowCache(state.activeWindowId);
+      setWindowSyncStatus('live');
+    }
     renderAll();
   });
 
+  socket.on('windows:snapshots', (list) => {
+    ingestServerSnapshots(list);
+    if (activeSheet === 'window') renderWindowSheet();
+    renderTabs();
+  });
+
   socket.on('state:patch', (patch) => {
+    const switchingTo = pendingSwitchId;
     Object.assign(state, patch);
-    const activeTab = (state.chatTabs || []).find(t => t.isActive);
-    if (activeTab) bumpRecent(TAB_RECENT_KEY, activeTab.title);
-    if (state.activeWindowId) bumpRecent(WINDOW_RECENT_KEY, state.activeWindowId);
+
+    if (switchingTo) {
+      // Keep optimistic selection while CDP catches up
+      if (patch.activeWindowId && patch.activeWindowId !== switchingTo) {
+        state.activeWindowId = switchingTo;
+      } else if (!state.activeWindowId) {
+        state.activeWindowId = switchingTo;
+      }
+
+      const hydrated = patch.messages !== undefined
+        || patch.chatTabs !== undefined
+        || patch.mode !== undefined
+        || patch.model !== undefined;
+      if (hydrated) {
+        putWindowCache(switchingTo);
+        setWindowSyncStatus('live');
+      }
+      if (patch.activeWindowId === switchingTo) {
+        markSwitchLive(switchingTo);
+      }
+    } else if (state.activeWindowId) {
+      putWindowCache(state.activeWindowId);
+    }
+
     renderAll();
   });
 
   socket.on('connection:status', (data) => {
+    // During an optimistic switch, ignore brief CDP disconnect flicker
+    if (pendingSwitchId && data && data.connected === false) return;
     state.connected = data.connected;
     renderAll();
   });
@@ -314,13 +600,6 @@
       return;
     }
     if (!result.ok) showToast(result.error || 'Command failed', 'error');
-  });
-
-  $btnUnpair.addEventListener('click', () => {
-    localStorage.removeItem(AUTH_TOKEN_KEY);
-    setPaired(false);
-    socket.disconnect();
-    showOnboarding();
   });
 
   $messages.addEventListener('scroll', () => {
@@ -383,6 +662,8 @@
 
   $pillMode.addEventListener('click', () => openSheet('mode'));
   $pillModel.addEventListener('click', () => openSheet('model'));
+  $pillWindow.addEventListener('click', () => openSheet('window'));
+  $connChip.addEventListener('click', () => openSheet('connection'));
   $sheetOverlay.addEventListener('click', closeSheet);
   $planModalClose.addEventListener('click', closePlanModal);
   $planModalOverlay.addEventListener('click', (e) => { if (e.target === $planModalOverlay) closePlanModal(); });
@@ -408,6 +689,8 @@
     renderTabs();
     renderModeModel();
     syncPlanModalFromState();
+    if (activeSheet === 'window') renderWindowSheet();
+    else if (activeSheet === 'connection') renderConnectionSheet();
   }
 
   function renderAgentStatus() {
@@ -415,27 +698,39 @@
       idle: 'Idle', thinking: 'Thinking...', generating: 'Generating...',
       running_tool: 'Running tool...', waiting_approval: 'Needs approval', error: 'Error',
     };
-    $statusIcon.textContent = '';
+    const status = state.agentStatus || 'idle';
     const activity = (state.agentActivityText || '').trim();
     const activityLive = !!state.agentActivityLive;
-    const baseLabel = labels[state.agentStatus] || state.agentStatus;
-    if (activityLive && activity && state.agentStatus !== 'idle') {
-      const max = 56;
-      $statusText.textContent = activity.length > max ? activity.slice(0, max - 1) + '…' : activity;
-      $statusText.classList.add('agent-status-shimmer');
-    } else {
-      $statusText.textContent = baseLabel;
-      $statusText.classList.remove('agent-status-shimmer');
-    }
-    const statusClass = 'agent-status-' + (state.agentStatus || 'idle');
-    $statusText.className = 'agent-status-text ' + statusClass;
-    if (state.agentStatus === 'waiting_approval') $statusText.style.color = 'var(--accent-yellow)';
-    else if (state.agentStatus === 'error') $statusText.style.color = 'var(--accent-red)';
-    else $statusText.style.color = '';
+    const baseLabel = labels[status] || status;
 
-    // Show unpair button only when connected
-    if (isPaired()) $btnUnpair.classList.remove('hidden');
-    else $btnUnpair.classList.add('hidden');
+    let text = baseLabel;
+    if (activityLive && activity && status !== 'idle') {
+      const max = 64;
+      text = activity.length > max ? activity.slice(0, max - 1) + '…' : activity;
+    }
+    $statusText.textContent = text;
+
+    const busy = status !== 'idle';
+    $activityStrip.classList.toggle('hidden', !busy);
+    const shimmer = busy && status !== 'waiting_approval' && status !== 'error';
+    $statusText.className = 'agent-status-text'
+      + (shimmer ? ' agent-status-shimmer' : '')
+      + (status === 'waiting_approval' ? ' agent-status-warn' : '')
+      + (status === 'error' ? ' agent-status-error' : '');
+
+    renderConnChip();
+  }
+
+  function renderConnChip() {
+    const relayUp = !!socket.connected;
+    const cursorUp = !!state.connected;
+    let cls = 'conn-chip';
+    let label = 'connected';
+    if (!relayUp) { cls += ' conn-off'; label = 'offline'; }
+    else if (!cursorUp) { cls += ' conn-warn'; label = 'no Cursor'; }
+    else cls += ' conn-ok';
+    $connChip.className = cls;
+    $connChipText.textContent = label;
   }
 
   function renderComposerQueue() {
@@ -499,6 +794,11 @@
   }
 
   function getEmptyState() {
+    if (pendingSwitchId) {
+      return windowSyncStatus === 'syncing'
+        ? { primary: 'Loading window…', hint: 'Showing cache until Cursor catches up.' }
+        : { primary: 'No messages in this chat yet.', hint: 'Send a message below.' };
+    }
     if (!socket.connected) return { primary: 'Connecting...', hint: 'Waiting for relay.' };
     if (!state.connected) return { primary: 'Waiting for Cursor', hint: 'Make sure Cursor is running.' };
     if (state.extractorStatus === 'stale') return { primary: 'Cursor stalled', hint: 'Extraction is failing.' };
@@ -1338,6 +1638,12 @@
 
   // --- Approvals ---
 
+  function shortActionLabel(label, fallback) {
+    const t = (label || '').replace(/\s+/g, ' ').trim();
+    if (!t || t.length > 24) return fallback;
+    return t;
+  }
+
   function renderApprovals() {
     if (state.pendingApprovals.length > 0) {
       $approvalBar.classList.remove('hidden');
@@ -1347,8 +1653,8 @@
       const rejectAction = approval.actions.find(a => a.type === 'reject');
       $btnApprove.disabled = !approveAction;
       $btnReject.disabled = !rejectAction;
-      if (approveAction) $btnApprove.textContent = approveAction.label || 'Accept';
-      if (rejectAction) $btnReject.textContent = rejectAction.label || 'Reject';
+      if (approveAction) $btnApprove.textContent = shortActionLabel(approveAction.label, 'Accept');
+      if (rejectAction) $btnReject.textContent = shortActionLabel(rejectAction.label, 'Reject');
       fireNotification(approval.description || 'Agent needs approval', 'cursor-approval');
     } else {
       $approvalBar.classList.add('hidden');
@@ -1463,128 +1769,258 @@
     document.removeEventListener('click', requestPerm);
   }, { once: true });
 
-  // --- Window rendering (persisted order, green dot for recent) ---
+  // --- Window pill (bottom toolbar) + window sheet ---
 
   function renderWindows() {
-    const windows = state.windows || [];
-    if (windows.length <= 1) {
-      $windowBar.classList.add('hidden');
+    const windows = getSwitchableWindows();
+    const active = windows.find(w => w.id === state.activeWindowId) || windows[0];
+    if (!active || !active.title) {
+      $pillWindow.classList.add('hidden');
       return;
     }
-    $windowBar.classList.remove('hidden');
-
-    // Sort: recent (bumped in last 5min) first, then by stored order, then by server order
-    const recentMap = getRecentMap(WINDOW_RECENT_KEY);
-    const storedOrder = getStoredOrder(WINDOW_ORDER_KEY);
-    const orderedWindows = [...windows].sort((a, b) => {
-      const aRecent = recentMap[a.id] ?? 0;
-      const bRecent = recentMap[b.id] ?? 0;
-      if (aRecent && bRecent) return bRecent - aRecent;
-      if (aRecent) return -1;
-      if (bRecent) return 1;
-      const aIdx = storedOrder.indexOf(a.id);
-      const bIdx = storedOrder.indexOf(b.id);
-      if (aIdx === -1 && bIdx === -1) return 0;
-      if (aIdx === -1) return 1;
-      if (bIdx === -1) return -1;
-      return aIdx - bIdx;
-    });
-
-    // Persist new order
-    saveStoredOrder(WINDOW_ORDER_KEY, orderedWindows.map(w => w.id));
-
-    const existingBtns = $windowList.querySelectorAll('.window-item');
-    const existingMap = new Map();
-    existingBtns.forEach(b => existingMap.set(b.dataset.id, b));
-    const newIds = new Set(orderedWindows.map(w => w.id));
-    existingBtns.forEach(b => { if (!newIds.has(b.dataset.id)) b.remove(); });
-
-    orderedWindows.forEach((win, i) => {
-      let btn = existingMap.get(win.id);
-      if (!btn) {
-        btn = document.createElement('button');
-        btn.className = 'window-item';
-        btn.dataset.id = win.id;
-        btn.addEventListener('click', () => {
-          socket.emit('command:switch_window', { commandId: newCommandId(), windowId: win.id });
-          showToast('Switching window...', 'success');
-        });
-      }
-      const isActive = win.id === state.activeWindowId;
-      const isRecent = !!recentMap[win.id];
-      btn.className = 'window-item' + (isActive ? ' active' : '') + (isRecent ? ' recent' : '');
-      btn.textContent = (isRecent ? '\u25CF ' : '') + (win.title || 'Window');
-      if (btn.parentNode !== $windowList || [...$windowList.children].indexOf(btn) !== i) {
-        $windowList.appendChild(btn);
-      }
-    });
-
-    // Reorder DOM to match sorted order
-    const fragment = document.createDocumentFragment();
-    orderedWindows.forEach(win => {
-      const btn = $windowList.querySelector('.window-item[data-id="' + CSS.escape(win.id) + '"]');
-      if (btn) fragment.appendChild(btn);
-    });
-    $windowList.appendChild(fragment);
+    $pillWindow.classList.remove('hidden');
+    const parsed = parseWindowGroup(active.title);
+    $pillWindowText.textContent = parsed.variant
+      ? parsed.group + ' · ' + parsed.variant
+      : parsed.group;
+    renderWindowSync();
   }
 
-  // --- Tab rendering (persisted order, green dot for recent) ---
+  function switchToWindow(win) {
+    if (!win || win.id === state.activeWindowId) return;
+
+    if (state.activeWindowId) putWindowCache(state.activeWindowId);
+
+    pendingSwitchPrevId = state.activeWindowId;
+    pendingSwitchId = win.id;
+    state.activeWindowId = win.id;
+
+    const cached = lookupWindowCache(win);
+    if (cached) {
+      applyWindowSnapshot(cached);
+      setWindowSyncStatus('syncing');
+    } else {
+      clearWindowScopedState();
+      setWindowSyncStatus('syncing');
+    }
+    userScrolledUp = false;
+    notifiedMessageIds.clear();
+    lastActiveTabTitle = '';
+
+    // Paint immediately (don't wait for socket round-trip)
+    renderTabs();
+    renderWindows();
+    renderMessages();
+    renderApprovals();
+    renderQuestionnaire();
+    renderComposerQueue();
+    renderAgentStatus();
+    renderModeModel();
+    renderInputState();
+
+    const commandId = newCommandId();
+    const targetId = win.id;
+    sendCommandAwaitResult('command:switch_window', {
+      commandId,
+      windowId: targetId,
+    }).then((result) => {
+      if (!result.ok) {
+        const rollbackId = pendingSwitchPrevId;
+        pendingSwitchId = null;
+        pendingSwitchPrevId = null;
+        if (rollbackId) {
+          state.activeWindowId = rollbackId;
+          const prev = memWindowCache.get(rollbackId);
+          if (prev) applyWindowSnapshot(prev);
+        }
+        setWindowSyncStatus('live');
+        renderAll();
+        showToast(result.error || 'Could not switch window', 'error');
+        return;
+      }
+      setTimeout(() => {
+        if (pendingSwitchId === targetId) markSwitchLive(targetId);
+      }, 8000);
+    });
+  }
+
+  function renderWindowSheet() {
+    $sheetWindowList.innerHTML = '';
+    const windows = getSwitchableWindows();
+    if (windows.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'sheet-empty';
+      empty.textContent = 'No open Cursor windows';
+      $sheetWindowList.appendChild(empty);
+      return;
+    }
+
+    const groups = groupWindows(windows);
+    groups.forEach((g) => {
+      const showHeader = g.items.length > 1;
+      if (showHeader) {
+        const header = document.createElement('div');
+        header.className = 'sheet-group-header';
+        header.textContent = g.group;
+        $sheetWindowList.appendChild(header);
+      }
+
+      g.items.forEach(({ win, variant }) => {
+        const isActive = win.id === state.activeWindowId;
+        const cached = lookupWindowCache(win);
+        const btn = document.createElement('button');
+        btn.className = 'sheet-item' + (isActive ? ' selected' : '');
+
+        // Single window in group → full project name; multi → Local / WSL / SSH
+        const label = showHeader ? (variant || 'Local') : (win.title || g.group);
+        const cacheHint = cached && !isActive
+          ? '<span class="win-cache-dot" title="Cached"></span>'
+          : '';
+        const badge = isActive
+          ? '<span class="win-badge win-badge-active">Active</span>'
+          : '<span class="win-badge win-badge-open">Open</span>';
+
+        btn.innerHTML =
+          '<span class="sheet-item-label">' + escapeHtml(label) + '</span>' +
+          '<span class="sheet-item-right">' + cacheHint + badge
+          + (isActive ? '<span class="sheet-item-check">\u2713</span>' : '')
+          + '</span>';
+        btn.addEventListener('click', () => {
+          closeSheet();
+          if (isActive) return;
+          switchToWindow(win);
+        });
+        $sheetWindowList.appendChild(btn);
+      });
+    });
+  }
+
+  // --- Connection sheet (status details + unpair) ---
+
+  function renderConnectionSheet() {
+    $sheetConnectionBody.innerHTML = '';
+
+    function addRow(label, value, ok) {
+      const row = document.createElement('div');
+      row.className = 'conn-row';
+      const dot = document.createElement('span');
+      dot.className = 'conn-row-dot ' + (ok ? 'ok' : 'off');
+      const lab = document.createElement('span');
+      lab.className = 'conn-row-label';
+      lab.textContent = label;
+      const val = document.createElement('span');
+      val.className = 'conn-row-value';
+      val.textContent = value;
+      row.appendChild(dot);
+      row.appendChild(lab);
+      row.appendChild(val);
+      $sheetConnectionBody.appendChild(row);
+    }
+
+    addRow('Relay', socket.connected ? 'Connected' : 'Disconnected', !!socket.connected);
+    addRow('Cursor IDE', state.connected ? 'Connected' : 'Not connected', !!state.connected);
+    const windows = state.windows || [];
+    const activeWin = windows.find(w => w.id === state.activeWindowId);
+    if (activeWin) addRow('Window', activeWin.title, true);
+    const activeTab = (state.chatTabs || []).find(t => t.isActive);
+    if (activeTab) addRow('Chat', activeTab.title, true);
+
+    if (isPaired()) {
+      const unpair = document.createElement('button');
+      unpair.className = 'conn-unpair-btn';
+      unpair.textContent = 'Unpair this device';
+      unpair.addEventListener('click', () => {
+        localStorage.removeItem(AUTH_TOKEN_KEY);
+        setPaired(false);
+        socket.disconnect();
+        closeSheet();
+        showOnboarding();
+      });
+      $sheetConnectionBody.appendChild(unpair);
+    }
+  }
+
+  // --- Tab bar: agent chats of the active window (+ only; no Customize / New Agent) ---
+
+  function isNoiseChatTab(title) {
+    const t = (title || '').trim();
+    if (!t) return true;
+    if (/^(customize|new agent|new chat|create agent|agents)$/i.test(t)) return true;
+    if (/\/\s*(customize|new agent|new chat|create agent)\s*$/i.test(t)) return true;
+    return false;
+  }
+
+  function tabDisplayTitle(title) {
+    const raw = (title || '').trim();
+    const idx = raw.lastIndexOf(' / ');
+    if (idx >= 0) {
+      const rest = raw.slice(idx + 3).trim();
+      if (rest) return rest;
+    }
+    return raw || 'Chat';
+  }
+
+  function getVisibleChatTabs() {
+    return (state.chatTabs || []).filter((t) => !isNoiseChatTab(t.title));
+  }
 
   function renderTabs() {
-    const tabs = state.chatTabs || [];
-    if (tabs.length <= 1) {
-      $tabBar.classList.add('hidden');
+    const tabs = getVisibleChatTabs();
+    if (tabs.length === 0) {
+      // Still show the bar when we have a window, so + stays reachable
+      if (getSwitchableWindows().length === 0) {
+        $tabBar.classList.add('hidden');
+        $tabList.innerHTML = '';
+        return;
+      }
+      $tabBar.classList.remove('hidden');
+      $tabList.innerHTML = '';
       return;
     }
     $tabBar.classList.remove('hidden');
 
-    const recentMap = getRecentMap(TAB_RECENT_KEY);
-    const storedOrder = getStoredOrder(TAB_ORDER_KEY);
-    const orderedTabs = [...tabs].sort((a, b) => {
-      const aRecent = recentMap[a.title] ?? 0;
-      const bRecent = recentMap[b.title] ?? 0;
-      if (aRecent && bRecent) return bRecent - aRecent;
-      if (aRecent) return -1;
-      if (bRecent) return 1;
-      const aIdx = storedOrder.indexOf(a.title);
-      const bIdx = storedOrder.indexOf(b.title);
-      if (aIdx === -1 && bIdx === -1) return 0;
-      if (aIdx === -1) return 1;
-      if (bIdx === -1) return -1;
-      return aIdx - bIdx;
-    });
-    saveStoredOrder(TAB_ORDER_KEY, orderedTabs.map(t => t.title));
-
     const existingBtns = $tabList.querySelectorAll('.tab-item');
     const existingMap = new Map();
-    existingBtns.forEach(b => existingMap.set(b.dataset.title, b));
-    const newTitles = new Set(orderedTabs.map(t => t.title));
-    existingBtns.forEach(b => { if (!newTitles.has(b.dataset.title)) b.remove(); });
+    existingBtns.forEach((b) => existingMap.set(b.dataset.title, b));
+    const newTitles = new Set(tabs.map((t) => t.title));
+    existingBtns.forEach((b) => { if (!newTitles.has(b.dataset.title)) b.remove(); });
 
-    orderedTabs.forEach((tab, i) => {
+    const fragment = document.createDocumentFragment();
+    tabs.forEach((tab) => {
       let btn = existingMap.get(tab.title);
       if (!btn) {
         btn = document.createElement('button');
         btn.className = 'tab-item';
         btn.dataset.title = tab.title;
+        btn.type = 'button';
+        const dot = document.createElement('span');
+        dot.className = 'tab-item-dot';
+        const label = document.createElement('span');
+        label.className = 'tab-item-label';
+        btn.appendChild(dot);
+        btn.appendChild(label);
         btn.addEventListener('click', () => {
           socket.emit('command:switch_tab', {
             commandId: newCommandId(), tabTitle: tab.title, selectorPath: tab.selectorPath,
           });
         });
+        existingMap.set(tab.title, btn);
       }
-      const isRecent = !!recentMap[tab.title];
-      btn.className = 'tab-item' + (tab.isActive ? ' active' : '') + (isRecent ? ' recent' : '');
-      btn.textContent = (isRecent ? '\u25CF ' : '') + (tab.title || 'Chat');
-    });
-
-    // Reorder DOM
-    const fragment = document.createDocumentFragment();
-    orderedTabs.forEach(tab => {
-      const btn = $tabList.querySelector('.tab-item[data-title="' + CSS.escape(tab.title) + '"]');
-      if (btn) fragment.appendChild(btn);
+      btn.classList.toggle('active', !!tab.isActive);
+      btn.querySelector('.tab-item-label').textContent = tabDisplayTitle(tab.title);
+      fragment.appendChild(btn);
     });
     $tabList.appendChild(fragment);
+
+    const activeTab = tabs.find((t) => t.isActive);
+    const activeTitle = activeTab ? activeTab.title : '';
+    if (activeTitle && activeTitle !== lastActiveTabTitle) {
+      lastActiveTabTitle = activeTitle;
+      const activeBtn = $tabList.querySelector('.tab-item.active');
+      if (activeBtn && typeof activeBtn.scrollIntoView === 'function') {
+        activeBtn.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      }
+    }
   }
 
   function escapeHtml(str) {
@@ -1612,8 +2048,6 @@
 
   // --- Bottom sheet logic ---
 
-  let activeSheet = null;
-
   function openSheet(type) {
     closeSheet();
     activeSheet = type;
@@ -1633,6 +2067,12 @@
     } else if (type === 'plan-model') {
       $sheetPlanModel.classList.remove('hidden');
       renderPlanModelSheet();
+    } else if (type === 'window') {
+      $sheetWindow.classList.remove('hidden');
+      renderWindowSheet();
+    } else if (type === 'connection') {
+      $sheetConnection.classList.remove('hidden');
+      renderConnectionSheet();
     }
   }
 
@@ -1641,6 +2081,8 @@
     $sheetMode.classList.add('hidden');
     $sheetModel.classList.add('hidden');
     $sheetPlanModel.classList.add('hidden');
+    $sheetWindow.classList.add('hidden');
+    $sheetConnection.classList.add('hidden');
     activeSheet = null;
   }
 

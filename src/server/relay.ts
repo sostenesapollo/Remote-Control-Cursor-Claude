@@ -9,6 +9,7 @@ import type { ServerConfig, CursorState, CommandPayload, CommandResult } from '.
 import type { StateManager } from './state-manager.js';
 import type { CommandExecutor } from './command-executor.js';
 import type { CDPBridge } from './cdp-bridge.js';
+import type { WindowMonitor } from './window-monitor.js';
 import { markdownToWebHtml, readPlanFile } from './plan-files.js';
 import {
   WEBAPP_SESSION_COOKIE,
@@ -17,6 +18,7 @@ import {
   type WebappSessionStore,
 } from './webapp-sessions.js';
 import { createPairCodeStore, type PairCodeStore } from './pair-codes.js';
+import type { CloudTunnel } from './cloud-tunnel.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -114,7 +116,7 @@ const LOGIN_PAGE_HTML = `<!DOCTYPE html>
         const data = await res.json();
         if (res.ok && data.token) {
           localStorage.setItem('cursor-remote-token', data.token);
-          window.location.href = '/';
+          window.location.href = '/app';
         } else {
           err.textContent = data.error || 'Invalid code';
           err.style.display = 'block';
@@ -137,13 +139,15 @@ export class Relay {
   private stateManager: StateManager;
   private commandExecutor: CommandExecutor;
   private cdpBridge: CDPBridge;
+  private windowMonitor: WindowMonitor;
+  private packageVersion: string;
 
   private sessionStore: WebappSessionStore;
   private pairCodeStore: PairCodeStore;
   private loginAttempts = new Map<string, RateLimitEntry>();
 
-  /** Max-Age for session cookie (30 days), aligned with typical “stay signed in” expectation. */
-  private static readonly SESSION_COOKIE_MAX_AGE_SEC = 30 * 24 * 60 * 60;
+  /** Session cookie Max-Age (~10 years). Client also keeps the token in localStorage with no TTL. */
+  private static readonly SESSION_COOKIE_MAX_AGE_SEC = 10 * 365 * 24 * 60 * 60;
 
   /** Auth is enabled if a password is set OR pairing is enabled (default). */
   private get authEnabled(): boolean {
@@ -159,14 +163,17 @@ export class Relay {
     config: ServerConfig,
     stateManager: StateManager,
     commandExecutor: CommandExecutor,
-    cdpBridge: CDPBridge
+    cdpBridge: CDPBridge,
+    windowMonitor: WindowMonitor
   ) {
     this.config = config;
     this.stateManager = stateManager;
     this.commandExecutor = commandExecutor;
     this.cdpBridge = cdpBridge;
+    this.windowMonitor = windowMonitor;
     this.sessionStore = createWebappSessionStore(config.dataDir);
     this.pairCodeStore = createPairCodeStore(config.dataDir);
+    this.packageVersion = this.readPackageVersion();
 
     this.app = express();
     this.httpServer = createServer(this.app);
@@ -189,6 +196,20 @@ export class Relay {
     if (this.config.pairingEnabled) {
       console.log('[relay] Pairing-code auth enabled');
     }
+  }
+
+  private readPackageVersion(): string {
+    try {
+      const candidates = [
+        join(__dirname, '..', '..', 'package.json'),
+        join(__dirname, '..', 'package.json'),
+      ];
+      for (const p of candidates) {
+        const pkg = JSON.parse(readFileSync(p, 'utf-8')) as { name?: string; version?: string };
+        if (pkg.name === 'cursor-remote' && pkg.version) return pkg.version;
+      }
+    } catch { /* ignore */ }
+    return '0.0.0';
   }
 
   start(): Promise<void> {
@@ -266,7 +287,7 @@ export class Relay {
     this.app.use(express.json());
 
     this.app.get('/login', (_req, res) => {
-      if (!this.authEnabled) return res.redirect('/');
+      if (!this.authEnabled) return res.redirect('/app');
       res.type('html').send(LOGIN_PAGE_HTML);
     });
 
@@ -286,7 +307,7 @@ export class Relay {
       }
       const code = this.pairCodeStore.generate();
       console.log('[relay] Generated pairing code');
-      res.json({ code, expiresInMs: 10 * 60 * 1000 });
+      res.json({ code, expiresInMs: null });
     });
 
     // --- Pairing: redeem a code (web/mobile client calls this) ---
@@ -375,6 +396,7 @@ export class Relay {
       const sessionOk = !this.authEnabled || this.resolveHttpSession(req) !== undefined;
       res.json({
         ok: true,
+        version: this.packageVersion,
         authRequired: this.authEnabled,
         pairingEnabled: this.config.pairingEnabled,
         sessionValid: sessionOk,
@@ -427,23 +449,85 @@ export class Relay {
     });
 
     const cacheBust = Date.now().toString(36);
+    const landingDir = join(__dirname, '..', 'landing');
+    const downloadsDir = join(__dirname, '..', 'downloads');
+
+    // Public marketing landing (connect.blocks.pw → /)
     this.app.get('/', (_req, res) => {
-      const htmlPath = join(clientDir, 'index.html');
+      const htmlPath = join(landingDir, 'index.html');
       try {
         let html = readFileSync(htmlPath, 'utf-8');
-        html = html.replace(/(src|href)="([^"]+)\.(js|css)"/g, `$1="$2.$3?v=${cacheBust}"`);
+        html = html.replace(/(href)="(\/landing\.css)"/g, `$1="$2?v=${cacheBust}"`);
         res.setHeader('Cache-Control', 'no-store');
         res.type('html').send(html);
       } catch (err) {
-        console.error(`[relay] Failed to serve index.html: ${err}`);
-        res.status(500).send('Client files not found');
+        console.error(`[relay] Failed to serve landing: ${err}`);
+        res.redirect('/app');
       }
     });
 
-    this.app.use(express.static(clientDir, {
+    this.app.get('/landing.css', (_req, res) => {
+      res.sendFile(join(landingDir, 'landing.css'), (err) => {
+        if (err) res.status(404).end();
+      });
+    });
+
+    // Extension / APK downloads
+    this.app.get('/download/cursor-remote.vsix', (_req, res) => {
+      const file = join(downloadsDir, 'cursor-remote.vsix');
+      res.download(file, `cursor-remote-${this.packageVersion}.vsix`, (err) => {
+        if (err) {
+          console.error(`[relay] VSIX download missing: ${err}`);
+          res.status(404).type('text').send('Extension package not found on this server yet.');
+        }
+      });
+    });
+
+    this.app.get('/download/cursor-remote.apk', (_req, res) => {
+      const file = join(downloadsDir, 'cursor-remote.apk');
+      res.download(file, 'cursor-remote-mobile.apk', (err) => {
+        if (err) {
+          console.error(`[relay] APK download missing: ${err}`);
+          res.status(404).type('text').send('APK not found on this server yet.');
+        }
+      });
+    });
+
+    // Remote web client lives under /app
+    const sendAppHtml = (_req: express.Request, res: express.Response) => {
+      const htmlPath = join(clientDir, 'index.html');
+      try {
+        let html = readFileSync(htmlPath, 'utf-8');
+        if (!html.includes('<base ')) {
+          html = html.replace('<head>', '<head>\n  <base href="/app/">');
+        }
+        html = html.replace(/(src|href)="(?!https?:|\/)([^"]+)\.(js|css|webmanifest|png)"/g,
+          `$1="$2.$3?v=${cacheBust}"`);
+        res.setHeader('Cache-Control', 'no-store');
+        res.type('html').send(html);
+      } catch (err) {
+        console.error(`[relay] Failed to serve app index.html: ${err}`);
+        res.status(500).send('Client files not found');
+      }
+    };
+
+    this.app.get('/app', sendAppHtml);
+    this.app.get('/app/', sendAppHtml);
+
+    this.app.use('/app', express.static(clientDir, {
       etag: true,
       lastModified: true,
-      setHeaders: (res) => {
+      setHeaders: (res, filePath) => {
+        if (filePath.endsWith('sw.js')) {
+          res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+          res.setHeader('Service-Worker-Allowed', '/app/');
+          return;
+        }
+        if (filePath.endsWith('.webmanifest')) {
+          res.setHeader('Content-Type', 'application/manifest+json; charset=utf-8');
+          res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+          return;
+        }
         res.setHeader('Cache-Control', 'no-cache, must-revalidate');
       },
     }));
@@ -488,6 +572,7 @@ export class Relay {
       console.log(`[relay] Client connected: ${socket.id}`);
 
       socket.emit('state:full', this.stateManager.getCurrentState());
+      socket.emit('windows:snapshots', this.windowMonitor.getSnapshotsForClient());
 
       socket.on('command:send_message', async (payload: CommandPayload) => {
         if (!payload.commandId || !payload.text) {
@@ -730,7 +815,25 @@ export class Relay {
         }
         console.log(`[relay] Command: switch_window to ${payload.windowId} from ${socket.id}`);
         try {
+          const state = this.stateManager.getCurrentState();
+          const win = state.windows.find(w => w.id === payload.windowId);
+          if (win && win.available === false) {
+            socket.emit('command:result', {
+              commandId: payload.commandId,
+              ok: false,
+              error: 'Window is closed in Cursor — reopen it to switch',
+            });
+            return;
+          }
+          this.windowMonitor.setHomeWindow(payload.windowId);
+          this.windowMonitor.hydrateStateForWindow(payload.windowId, win?.title);
+          // Tell clients the new active window before CDP reconnect finishes
+          this.stateManager.updateWindows(
+            this.windowMonitor.getWindowsForClient(),
+            payload.windowId
+          );
           await this.cdpBridge.switchWindow(payload.windowId);
+          this.windowMonitor.triggerCycle();
           socket.emit('command:result', { commandId: payload.commandId, ok: true });
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
@@ -751,6 +854,18 @@ export class Relay {
 
     this.stateManager.on('connection:changed', (connected: boolean) => {
       this.io.emit('connection:status', { connected });
+    });
+
+    let snapBroadcastTimer: ReturnType<typeof setTimeout> | null = null;
+    const broadcastSnapshots = () => {
+      if (snapBroadcastTimer) return;
+      snapBroadcastTimer = setTimeout(() => {
+        snapBroadcastTimer = null;
+        this.io.emit('windows:snapshots', this.windowMonitor.getSnapshotsForClient());
+      }, 400);
+    };
+    this.windowMonitor.on('window:update', () => {
+      broadcastSnapshots();
     });
   }
 }

@@ -48,6 +48,8 @@ async function waitForFreshExtraction(stateManager: StateManager, genBefore: num
 
 const TOPIC_CREATE_DELAY_MS = 1500;
 const PURGE_SCAN_MAX = 10000;
+/** Use cached per-window snapshot for read-only history when younger than this. */
+const SNAPSHOT_FRESH_MS = 45_000;
 const DEFAULT_HISTORY_COUNT = 5;
 
 // --- /register ---
@@ -385,7 +387,7 @@ export async function handleResync(ctx: BotContext, deps: CommandDeps): Promise<
   }
 
   await deps.cdpBridge.refreshWindows();
-  deps.stateManager.updateWindows(deps.cdpBridge.windows, deps.cdpBridge.activeTargetId);
+  deps.windowMonitor.publishWindows();
   const state = deps.stateManager.getCurrentState();
 
   // Resolve the new (window, tab) target. Two paths:
@@ -730,7 +732,24 @@ export async function handleHistory(ctx: BotContext, deps: CommandDeps): Promise
   }
 
   const cleanedMapping = cleanTabTitle(mapping.tabTitle).toLowerCase();
-  if (targetWin.id === state.activeWindowId && state.messages.length > 0) {
+  if (targetWindowId) {
+    let snap = deps.windowMonitor.getSnapshot(targetWindowId);
+    if (!snap) snap = deps.windowMonitor.findSnapshotByTitle(mapping.windowTitle);
+    if (
+      snap
+      && snap.messages.length > 0
+      && deps.windowMonitor.isSnapshotFresh(targetWindowId, SNAPSHOT_FRESH_MS, mapping.windowTitle)
+    ) {
+      const snapTab = snap.chatTabs.find(t => t.isActive)
+        ?? (snap.chatTabs.length === 1 ? snap.chatTabs[0] : undefined);
+      if (snapTab && cleanTabTitle(snapTab.title).toLowerCase() === cleanedMapping) {
+        messages = snap.messages;
+        console.log(`[telegram] /history: using cached snapshot (${messages.length} msgs, ${Math.round((Date.now() - snap.lastUpdated) / 1000)}s old)`);
+      }
+    }
+  }
+
+  if (targetWin.id === state.activeWindowId && state.messages.length > 0 && messages.length === 0) {
     const activeTab = state.chatTabs.find(t => t.isActive);
     if (activeTab && cleanTabTitle(activeTab.title).toLowerCase() === cleanedMapping) {
       messages = state.messages;
@@ -739,13 +758,15 @@ export async function handleHistory(ctx: BotContext, deps: CommandDeps): Promise
 
   console.log(`[telegram] /history ${count} for "${windowTitle}"`);
 
-  // Switch to target window/tab and read fresh extraction
-  if (targetWindowId) {
+  // Switch to target window/tab only when cache miss or we need to scroll for more
+  if (targetWindowId && (messages.length === 0 || messages.length < count)) {
     if (targetWindowId !== state.activeWindowId) {
       try {
         const genBefore = deps.stateManager.generation;
+        deps.windowMonitor.hydrateStateForWindow(targetWindowId, mapping.windowTitle);
         await deps.cdpBridge.switchWindow(targetWindowId);
         deps.windowMonitor.setHomeWindow(targetWindowId);
+        deps.windowMonitor.triggerCycle();
         await waitForFreshExtraction(deps.stateManager, genBefore, 4000);
       } catch {
         // Stay on current
@@ -862,7 +883,7 @@ async function ensureTopicWindow(ctx: BotContext, deps: CommandDeps): Promise<bo
 
   if (!alreadyOnWindow) {
     await deps.cdpBridge.refreshWindows();
-    deps.stateManager.updateWindows(deps.cdpBridge.windows, deps.cdpBridge.activeTargetId);
+    deps.windowMonitor.publishWindows();
     const freshState = deps.stateManager.getCurrentState();
 
     let targetWin = freshState.windows.find(w => w.id === mapping.windowId);
@@ -878,8 +899,10 @@ async function ensureTopicWindow(ctx: BotContext, deps: CommandDeps): Promise<bo
 
     try {
       const genBefore = deps.stateManager.generation;
+      deps.windowMonitor.hydrateStateForWindow(targetWin.id, targetWin.title);
       await deps.cdpBridge.switchWindow(targetWin.id);
       deps.windowMonitor.setHomeWindow(targetWin.id);
+      deps.windowMonitor.triggerCycle();
       await waitForFreshExtraction(deps.stateManager, genBefore, 4000);
     } catch {
       await ctx.reply('⚠️ Failed to switch to the target window.');
@@ -1267,7 +1290,7 @@ export async function handleTextMessage(ctx: BotContext, deps: CommandDeps): Pro
 
   if (!alreadyOnWindow) {
     await deps.cdpBridge.refreshWindows();
-    deps.stateManager.updateWindows(deps.cdpBridge.windows, deps.cdpBridge.activeTargetId);
+    deps.windowMonitor.publishWindows();
     state = deps.stateManager.getCurrentState();
 
     let targetWin = state.windows.find(w => w.id === mapping.windowId);
@@ -1282,9 +1305,11 @@ export async function handleTextMessage(ctx: BotContext, deps: CommandDeps): Pro
     }
 
     try {
+      deps.windowMonitor.hydrateStateForWindow(targetWin.id, targetWin.title);
       await deps.cdpBridge.switchWindow(targetWin.id);
       deps.windowMonitor.setHomeWindow(targetWin.id);
-      await sleep(1500);
+      deps.windowMonitor.triggerCycle();
+      await sleep(800);
     } catch (err) {
       await ctx.reply(`⚠️ Failed to switch window: ${err instanceof Error ? err.message : err}`);
       return;

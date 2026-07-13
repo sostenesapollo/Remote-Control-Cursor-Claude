@@ -163,4 +163,80 @@ describe('extractionFunction', () => {
     );
     assert.equal(state.questionnaire.continueDisabled, false);
   });
+
+  it('does not surface approvals for completed shell tool cards', () => {
+    const state = withDom(`
+      <main id="root">
+        <div data-tool-call-id="shell-done" data-tool-status="completed" class="ui-tool-call-card">
+          <div class="ui-shell-tool-call__approval-row">
+            <button class="ui-shell-tool-call__run-btn">Run</button>
+            <button class="ui-shell-tool-call__skip-btn">Skip</button>
+          </div>
+          <div class="ui-shell-tool-call__command">aws ec2 describe-instances</div>
+        </div>
+      </main>
+    `);
+
+    assert.equal(state.pendingApprovals.length, 0);
+    assert.notEqual(state.agentStatus, 'waiting_approval');
+  });
+
+  it('does not surface hidden approval buttons from stale DOM', () => {
+    const state = withDom(`
+      <main id="root">
+        <div data-tool-call-id="shell-stale" data-tool-status="loading" class="ui-tool-call-card" hidden>
+          <div class="ui-shell-tool-call__approval-row">
+            <button class="ui-shell-tool-call__run-btn" aria-label="Accept">Run</button>
+            <button class="ui-shell-tool-call__skip-btn" aria-label="Reject">Skip</button>
+          </div>
+        </div>
+      </main>
+    `);
+
+    assert.equal(state.pendingApprovals.length, 0);
+  });
+
+  it('does not attach actions to completed tool messages', () => {
+    const state = withDom(`
+      <main id="root">
+        <article data-flat-index="0" data-message-role="ai" data-message-kind="tool">
+          <div data-tool-call-id="fetch-done" data-tool-status="completed">
+            <div class="composer-tool-former-message">
+              <div class="composer-tool-call-status-row">
+                <button class="composer-skip-button">Skip</button>
+                <button class="composer-run-button anysphere-secondary-button">Allow</button>
+              </div>
+            </div>
+          </div>
+        </article>
+      </main>
+    `);
+
+    const tool = state.messages.find((message) => message.type === 'tool');
+    assert.ok(tool);
+    assert.equal(tool.actions, undefined);
+  });
+
+  it('ignores stale approval rows from older messages in the transcript', () => {
+    const state = withDom(`
+      <main id="root">
+        <article data-flat-index="1" data-message-role="ai" data-message-kind="tool">
+          <div data-tool-call-id="old-shell" data-tool-status="loading" class="ui-tool-call-card">
+            <div class="ui-shell-tool-call__approval-row">
+              <button class="ui-shell-tool-call__run-btn">Run</button>
+              <button class="ui-shell-tool-call__skip-btn">Skip</button>
+            </div>
+            <div class="ui-shell-tool-call__command">aws ec2 describe-instances</div>
+          </div>
+        </article>
+        <article data-flat-index="5" data-message-role="ai" data-message-kind="tool">
+          <div data-tool-call-id="new-shell" data-tool-status="completed" class="ui-tool-call-card">
+            <div class="ui-shell-tool-call__command">tail -f /var/log/bake.log</div>
+          </div>
+        </article>
+      </main>
+    `);
+
+    assert.equal(state.pendingApprovals.length, 0);
+  });
 });

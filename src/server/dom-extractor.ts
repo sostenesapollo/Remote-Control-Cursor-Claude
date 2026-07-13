@@ -519,14 +519,71 @@ export function extractionFunction(
       return extractCodeBlockItem(block);
     }
 
+    const isMenuTrigger = (btn: Element): boolean => {
+      const popup = btn.getAttribute('aria-haspopup');
+      return popup === 'menu' || popup === 'true' || popup === 'listbox';
+    };
+
+    const isActionableButton = (btn: Element): boolean => {
+      if (isMenuTrigger(btn)) return false;
+      if (btn.getAttribute('aria-disabled') === 'true') return false;
+      if (btn.hasAttribute('disabled')) return false;
+      const htmlBtn = btn as HTMLButtonElement;
+      if (htmlBtn.disabled) return false;
+      if (btn.closest('[hidden]')) return false;
+      try {
+        const style = window.getComputedStyle(btn);
+        if (style.display === 'none' || style.visibility === 'hidden') return false;
+        if (parseFloat(style.opacity || '1') === 0) return false;
+      } catch { /* JSDOM / older renderers */ }
+      try {
+        const rect = btn.getBoundingClientRect();
+        if (rect.width === 0 && rect.height === 0) return false;
+      } catch { /* ignore */ }
+      let parent: Element | null = btn.parentElement;
+      while (parent) {
+        if (parent.hasAttribute('hidden')) return false;
+        try {
+          const ps = window.getComputedStyle(parent);
+          if (ps.display === 'none' || ps.visibility === 'hidden') return false;
+        } catch { /* ignore */ }
+        parent = parent.parentElement;
+      }
+      return true;
+    };
+
+    const toolStatusFromScope = (scope: Element): string | null =>
+      scope.closest('[data-tool-call-id]')?.getAttribute('data-tool-status')
+      || scope.getAttribute('data-tool-status')
+      || null;
+
+    const flatIndexForEl = (el: Element): number => {
+      const wrapper = el.closest('[data-flat-index], [data-message-index]');
+      if (!wrapper) return -1;
+      const raw = wrapper.getAttribute('data-flat-index') ?? wrapper.getAttribute('data-message-index');
+      const n = raw === null ? NaN : parseInt(raw, 10);
+      return Number.isNaN(n) ? -1 : n;
+    };
+
+    const isVisibleScope = (el: Element): boolean => {
+      if (el.closest('[hidden]')) return false;
+      try {
+        const style = window.getComputedStyle(el);
+        if (style.display === 'none' || style.visibility === 'hidden') return false;
+      } catch { /* ignore */ }
+      return true;
+    };
+
     function extractToolActions(
       container: Element
     ): { label: string; type: 'run' | 'skip' | 'allow'; selectorPath: string }[] {
+      if (toolStatusFromScope(container) === 'completed') return [];
+
       const actions: { label: string; type: 'run' | 'skip' | 'allow'; selectorPath: string }[] = [];
       const seenPaths = new Set<string>();
 
       const skipBtn = container.querySelector('.composer-skip-button');
-      if (skipBtn) {
+      if (skipBtn && isActionableButton(skipBtn)) {
         const path = buildSelectorPath(skipBtn);
         seenPaths.add(path);
         actions.push({ label: 'Skip', type: 'skip' as const, selectorPath: path });
@@ -534,6 +591,7 @@ export function extractionFunction(
 
       const runBtns = container.querySelectorAll('.composer-run-button, .anysphere-secondary-button');
       for (const btn of Array.from(runBtns)) {
+        if (!isActionableButton(btn)) continue;
         const path = buildSelectorPath(btn);
         if (seenPaths.has(path)) continue;
         seenPaths.add(path);
@@ -1242,23 +1300,25 @@ export function extractionFunction(
     //     generic "Run" textMatch — but it opens a settings menu, not an
     //     approval action).
     const pendingApprovals: CursorState['pendingApprovals'] = [];
-    const isMenuTrigger = (btn: Element): boolean => {
-      const popup = btn.getAttribute('aria-haspopup');
-      return popup === 'menu' || popup === 'true' || popup === 'listbox';
-    };
     const cleanBtnLabel = (raw: string): string =>
       raw.replace(/\s*(Shift\+)?⏎\s*/g, '').replace(/\s+/g, ' ').trim();
 
     const seenCards = new Set<Element>();
+    const approvalCandidates: Array<{
+      flatIndex: number;
+      entry: CursorState['pendingApprovals'][0];
+    }> = [];
     const approvalRows = container.querySelectorAll('.ui-shell-tool-call__approval-row');
     for (const row of Array.from(approvalRows)) {
       const card = row.closest('.ui-tool-call-card') || row.closest('.ui-shell-tool-call');
       if (!card || seenCards.has(card)) continue;
+      if (!isVisibleScope(row) || !isVisibleScope(card)) continue;
+      if (toolStatusFromScope(card) === 'completed') continue;
 
       const actions: CursorState['pendingApprovals'][0]['actions'] = [];
 
       const runBtn = row.querySelector('button.ui-shell-tool-call__run-btn');
-      if (runBtn && !isMenuTrigger(runBtn)) {
+      if (runBtn && isActionableButton(runBtn)) {
         actions.push({
           label: cleanBtnLabel(runBtn.textContent || '') || 'Run',
           type: 'approve',
@@ -1266,7 +1326,7 @@ export function extractionFunction(
         });
       }
       const allowlistBtn = row.querySelector('button.ui-shell-tool-call__allowlist-button');
-      if (allowlistBtn && !isMenuTrigger(allowlistBtn)) {
+      if (allowlistBtn && isActionableButton(allowlistBtn)) {
         const lblEl = allowlistBtn.querySelector('.ui-shell-tool-call__allowlist-button-label');
         actions.push({
           label: cleanBtnLabel(lblEl?.textContent || allowlistBtn.textContent || '') || 'Allowlist',
@@ -1275,7 +1335,7 @@ export function extractionFunction(
         });
       }
       const skipBtn = row.querySelector('button.ui-shell-tool-call__skip-btn');
-      if (skipBtn && !isMenuTrigger(skipBtn)) {
+      if (skipBtn && isActionableButton(skipBtn)) {
         actions.push({
           label: cleanBtnLabel(skipBtn.textContent || '') || 'Skip',
           type: 'reject',
@@ -1296,15 +1356,25 @@ export function extractionFunction(
       const descText = (descEl?.textContent || '').trim().substring(0, 200);
       const description = cmdText || descText || 'Pending approval';
 
-      // Stable per-card id — Cursor's tool-call id when available, falling
-      // back to selector path. Keeps the entry consistent across polls.
       const bubble = card.closest('[data-tool-call-id]');
       const toolCallId = bubble?.getAttribute('data-tool-call-id') || buildSelectorPath(card);
-      pendingApprovals.push({
-        id: `tool:${toolCallId}`,
-        description,
-        actions,
+      approvalCandidates.push({
+        flatIndex: flatIndexForEl(card),
+        entry: {
+          id: `tool:${toolCallId}`,
+          description,
+          actions,
+        },
       });
+    }
+
+    if (approvalCandidates.length > 0) {
+      const maxFlat = Math.max(...approvalCandidates.map((c) => c.flatIndex));
+      for (const candidate of approvalCandidates) {
+        if (candidate.flatIndex === maxFlat || candidate.flatIndex < 0) {
+          pendingApprovals.push(candidate.entry);
+        }
+      }
     }
 
     if (pendingApprovals.length === 0) {
@@ -1313,11 +1383,18 @@ export function extractionFunction(
       const seenApproveBtns = new Set<Element>();
       const seenRejectBtns = new Set<Element>();
 
+      const isInApprovalContext = (btn: Element): boolean =>
+        !!btn.closest(
+          '.ui-shell-tool-call__approval-row, .composer-tool-call-status-row, .composer-terminal-tool-call-block-container, .composer-edit-file-review-wrapper, .composer-tool-call-container'
+        );
+
       for (const sel of approveSelectors) {
         try {
           const btns = container.querySelectorAll(sel);
           for (const btn of Array.from(btns)) {
-            if (seenApproveBtns.has(btn) || isMenuTrigger(btn)) continue;
+            if (seenApproveBtns.has(btn) || !isActionableButton(btn)) continue;
+            if (!isVisibleScope(btn)) continue;
+            if (toolStatusFromScope(btn) === 'completed') continue;
             const label = btn.textContent?.trim() || btn.getAttribute('aria-label') || '';
             if (label) {
               seenApproveBtns.add(btn);
@@ -1328,7 +1405,10 @@ export function extractionFunction(
       }
       if (approveButtons.length === 0 && approveTextMatch.length > 0) {
         for (const btn of Array.from(container.querySelectorAll('button'))) {
-          if (seenApproveBtns.has(btn) || isMenuTrigger(btn)) continue;
+          if (seenApproveBtns.has(btn) || !isActionableButton(btn)) continue;
+          if (!isVisibleScope(btn)) continue;
+          if (!isInApprovalContext(btn)) continue;
+          if (toolStatusFromScope(btn) === 'completed') continue;
           const text = `${btn.textContent?.trim() || ''} ${btn.getAttribute('aria-label') || ''}`.toLowerCase();
           for (const pat of approveTextMatch) {
             if (text.includes(pat.toLowerCase())) {
@@ -1344,7 +1424,9 @@ export function extractionFunction(
         try {
           const btns = container.querySelectorAll(sel);
           for (const btn of Array.from(btns)) {
-            if (seenRejectBtns.has(btn) || isMenuTrigger(btn)) continue;
+            if (seenRejectBtns.has(btn) || !isActionableButton(btn)) continue;
+            if (!isVisibleScope(btn)) continue;
+            if (toolStatusFromScope(btn) === 'completed') continue;
             const label = btn.textContent?.trim() || btn.getAttribute('aria-label') || '';
             if (label) {
               seenRejectBtns.add(btn);
@@ -1355,7 +1437,10 @@ export function extractionFunction(
       }
       if (rejectButtons.length === 0 && rejectTextMatch.length > 0) {
         for (const btn of Array.from(container.querySelectorAll('button'))) {
-          if (seenRejectBtns.has(btn) || isMenuTrigger(btn)) continue;
+          if (seenRejectBtns.has(btn) || !isActionableButton(btn)) continue;
+          if (!isVisibleScope(btn)) continue;
+          if (!isInApprovalContext(btn)) continue;
+          if (toolStatusFromScope(btn) === 'completed') continue;
           const text = `${btn.textContent?.trim() || ''} ${btn.getAttribute('aria-label') || ''}`.toLowerCase();
           for (const pat of rejectTextMatch) {
             if (text.includes(pat.toLowerCase())) {
@@ -1459,12 +1544,14 @@ export function extractionFunction(
           const rawGroupTitle = (groupTitleEl?.textContent || '').trim();
 
           let displayTitle = cleanTabTitle(rawAgentTitle);
+          if (/^(customize|new agent|new chat|create agent|agents)$/i.test(displayTitle)) continue;
           if (rawGroupTitle) {
             const g = cleanTabTitle(rawGroupTitle);
             if (g) {
               displayTitle = `${g} / ${cleanTabTitle(rawAgentTitle)}`.substring(0, 120);
             }
           }
+          if (/\/\s*(customize|new agent|new chat|create agent)\s*$/i.test(displayTitle)) continue;
 
           if (seenTitles.has(displayTitle)) continue;
           seenTitles.add(displayTitle);
@@ -1523,6 +1610,8 @@ export function extractionFunction(
             : (tab.getAttribute('aria-label') || tab.textContent || '').trim();
           const title = cleanTabTitle(rawTitle);
           if (!title || seenTitles.has(title)) continue;
+          if (/^(customize|new agent|new chat|create agent|agents)$/i.test(title)) continue;
+          if (/\/\s*(customize|new agent|new chat|create agent)\s*$/i.test(title)) continue;
           seenTitles.add(title);
 
           const composerId = tab.getAttribute('data-composer-id')

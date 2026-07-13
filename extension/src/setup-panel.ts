@@ -83,10 +83,13 @@ export class SetupPanel {
         signal: AbortSignal.timeout(3000),
       });
       if (res.ok) {
-        const data = await res.json() as { code?: string; expiresInMs?: number };
+        const data = await res.json() as { code?: string; expiresInMs?: number | null };
         if (data.code) {
           this._pairCode = data.code;
-          this._pairCodeExpiry = Date.now() + (data.expiresInMs ?? 600000);
+          // null/0 = no time expiry (single-use only)
+          this._pairCodeExpiry = data.expiresInMs
+            ? Date.now() + data.expiresInMs
+            : Number.POSITIVE_INFINITY;
           await this.updateWebview();
           this.startPolling();
           return;
@@ -192,7 +195,9 @@ export class SetupPanel {
     const config = vscode.workspace.getConfiguration('cursorRemote');
     const telegramAuth = loadTelegramAuth(this.context);
     const telegramBotToken = await this.context.secrets.get(TELEGRAM_BOT_TOKEN_SECRET_KEY);
-    const codeExpirySec = Math.max(0, Math.round((this._pairCodeExpiry - Date.now()) / 1000));
+    const codeExpirySec = Number.isFinite(this._pairCodeExpiry)
+      ? Math.max(0, Math.round((this._pairCodeExpiry - Date.now()) / 1000))
+      : -1;
     const state = {
       pairCode: this._pairCode,
       pairCodeExpirySec: codeExpirySec,
@@ -240,9 +245,11 @@ function getWebviewContent(state: PanelState): string {
   const maskedToken = hasBotToken
     ? state.telegramBotToken.slice(0, 6) + '...' + state.telegramBotToken.slice(-4)
     : '';
-  const codeExpiryText = state.pairCodeExpirySec > 0
-    ? `Expires in ${Math.floor(state.pairCodeExpirySec / 60)}m ${state.pairCodeExpirySec % 60}s`
-    : '';
+  const codeExpiryText = state.pairCodeExpirySec < 0
+    ? 'Does not expire (single-use)'
+    : state.pairCodeExpirySec > 0
+      ? `Expires in ${Math.floor(state.pairCodeExpirySec / 60)}m ${state.pairCodeExpirySec % 60}s`
+      : '';
 
   return /*html*/ `<!DOCTYPE html>
 <html lang="en">

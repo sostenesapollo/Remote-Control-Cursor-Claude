@@ -45,7 +45,8 @@ const ALLOWED_EXACT = [
 const ALLOWED_PREFIXES = [
   'dist/client/',
   'media/',
-  'extension/media/walkthrough/',
+  // Walkthrough paths in package.json are "extension/media/..." so vsce nests them.
+  'extension/media/',
 ];
 
 function main(): void {

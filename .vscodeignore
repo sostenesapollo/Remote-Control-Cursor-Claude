@@ -32,3 +32,11 @@ dist/discovery/
 dist/extension.js
 dist/extension.js.map
 dist/client/client/
+mobile/
+releases/
+*.apk
+*.vsix
+.git/
+agent-transcripts/
+ONBOARDING.md
+CONNECT.md

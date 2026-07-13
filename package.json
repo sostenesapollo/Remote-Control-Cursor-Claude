@@ -1,7 +1,7 @@
 {
   "name": "cursor-remote",
   "displayName": "CursorRemote",
-  "version": "0.1.52",
+  "version": "0.1.53",
   "description": "Remote control your local Cursor AI agent — monitor, approve, and send tasks from your phone or Telegram.",
   "publisher": "cursor-remote",
   "repository": {
@@ -232,7 +232,7 @@
   },
   "scripts": {
     "dev": "mkdir -p temp data && tsx scripts/dev-wrapper.ts",
-    "build": "tsc && rm -rf dist/client && cp -r src/client dist/client && cp node_modules/socket.io/client-dist/socket.io.min.js dist/client/vendor-socket.io.min.js && cp node_modules/socket.io/client-dist/socket.io.min.js.map dist/client/vendor-socket.io.min.js.map",
+    "build": "tsc && rm -rf dist/client dist/landing dist/downloads && cp -r src/client dist/client && cp -r src/landing dist/landing && mkdir -p dist/downloads && cp node_modules/socket.io/client-dist/socket.io.min.js dist/client/vendor-socket.io.min.js && cp node_modules/socket.io/client-dist/socket.io.min.js.map dist/client/vendor-socket.io.min.js.map && node -e \"const fs=require('fs');const path=require('path');const dir='releases';const vsix=(fs.existsSync(dir)?fs.readdirSync(dir):[]).filter(f=>/^cursor-remote-\\\\d/.test(f)&&f.endsWith('.vsix')).sort().pop();if(vsix)fs.copyFileSync(path.join(dir,vsix),'dist/downloads/cursor-remote.vsix');const apk='releases/cursor-remote-mobile-1.0.0.apk';if(fs.existsSync(apk))fs.copyFileSync(apk,'dist/downloads/cursor-remote.apk');\"",
     "build:ext": "node extension/esbuild.js --production",
     "watch:ext": "node extension/esbuild.js --watch",
     "package": "tsx scripts/bump-build.ts && mkdir -p releases && npx @vscode/vsce package --no-dependencies --out releases/ && tsx scripts/verify-vsix.ts",

@@ -24,7 +24,7 @@ function loadFixture(name: string): Array<{ ts: number; state: CursorState | nul
   return lines.map(l => JSON.parse(l));
 }
 
-function createTestEnv() {
+async function createTestEnv() {
   const html = readFileSync(HTML_PATH, 'utf-8');
   const appJs = readFileSync(APP_JS_PATH, 'utf-8');
 
@@ -53,7 +53,10 @@ function createTestEnv() {
 
       (window as any).__mockSocket = mockSocket;
 
-      const storage: Record<string, string> = {};
+      const storage: Record<string, string> = {
+        'cursor-remote-paired': '1',
+        'cursor-remote-token': 'test-token',
+      };
       Object.defineProperty(window, 'localStorage', {
         value: {
           getItem: (key: string) => storage[key] ?? null,
@@ -66,6 +69,39 @@ function createTestEnv() {
         setTimeout(cb, 0);
         return 0;
       };
+
+      // PWA / install-prompt helpers used at init
+      (window as any).matchMedia = (query: string) => ({
+        matches: false,
+        media: query,
+        onchange: null,
+        addListener() {},
+        removeListener() {},
+        addEventListener() {},
+        removeEventListener() {},
+        dispatchEvent() { return false; },
+      });
+
+      Object.defineProperty(window.navigator, 'serviceWorker', {
+        configurable: true,
+        value: undefined,
+      });
+
+      (window as any).fetch = async (input: string | URL) => {
+        const url = String(input);
+        if (url.includes('/health')) {
+          return {
+            ok: true,
+            json: async () => ({
+              ok: true,
+              authRequired: true,
+              sessionValid: true,
+              pairingEnabled: true,
+            }),
+          };
+        }
+        return { ok: false, json: async () => ({}) };
+      };
     },
   });
 
@@ -77,6 +113,14 @@ function createTestEnv() {
   document.body.appendChild(scriptEl);
 
   const mockSocket = (window as any).__mockSocket as MockSocket;
+
+  // init() awaits checkAuth() before bootstrap() wires the socket.
+  for (let i = 0; i < 20 && !mockSocket.handlers.has('state:full'); i++) {
+    await new Promise((r) => setTimeout(r, 0));
+  }
+  if (!mockSocket.handlers.has('state:full')) {
+    throw new Error('web client bootstrap did not register socket handlers');
+  }
 
   return { dom, window, document, mockSocket };
 }
@@ -94,8 +138,8 @@ function firePatch(mockSocket: MockSocket, patch: Partial<CursorState>) {
 describe('web: agent status', () => {
   let env: ReturnType<typeof createTestEnv>;
 
-  beforeEach(() => {
-    env = createTestEnv();
+  beforeEach(async () => {
+    env = await createTestEnv();
   });
 
   it('shows idle when agent is idle', () => {
@@ -126,8 +170,8 @@ describe('web: agent status', () => {
 describe('web: message rendering', () => {
   let env: ReturnType<typeof createTestEnv>;
 
-  beforeEach(() => {
-    env = createTestEnv();
+  beforeEach(async () => {
+    env = await createTestEnv();
   });
 
   it('renders human message', () => {
@@ -176,8 +220,8 @@ describe('web: message rendering', () => {
 describe('web: approval widgets', () => {
   let env: ReturnType<typeof createTestEnv>;
 
-  beforeEach(() => {
-    env = createTestEnv();
+  beforeEach(async () => {
+    env = await createTestEnv();
   });
 
   it('renders run_command with command text', () => {
@@ -215,8 +259,8 @@ describe('web: approval widgets', () => {
 describe('web: plan widget', () => {
   let env: ReturnType<typeof createTestEnv>;
 
-  beforeEach(() => {
-    env = createTestEnv();
+  beforeEach(async () => {
+    env = await createTestEnv();
   });
 
   it('renders plan block with title and progress', () => {
@@ -234,8 +278,8 @@ describe('web: plan widget', () => {
 describe('web: code block rendering', () => {
   let env: ReturnType<typeof createTestEnv>;
 
-  beforeEach(() => {
-    env = createTestEnv();
+  beforeEach(async () => {
+    env = await createTestEnv();
   });
 
   it('renders diff block with viewport', () => {
@@ -271,8 +315,8 @@ describe('web: code block rendering', () => {
 describe('web: fetch tool', () => {
   let env: ReturnType<typeof createTestEnv>;
 
-  beforeEach(() => {
-    env = createTestEnv();
+  beforeEach(async () => {
+    env = await createTestEnv();
   });
 
   it('renders fetch tool with action text and URL', () => {
@@ -314,8 +358,8 @@ describe('web: fetch tool', () => {
 describe('web: mode/model pills', () => {
   let env: ReturnType<typeof createTestEnv>;
 
-  beforeEach(() => {
-    env = createTestEnv();
+  beforeEach(async () => {
+    env = await createTestEnv();
   });
 
   it('renders mode and model from state', () => {
@@ -333,8 +377,8 @@ describe('web: mode/model pills', () => {
 describe('web: questionnaire widget', () => {
   let env: ReturnType<typeof createTestEnv>;
 
-  beforeEach(() => {
-    env = createTestEnv();
+  beforeEach(async () => {
+    env = await createTestEnv();
   });
 
   function baseState(): CursorState {

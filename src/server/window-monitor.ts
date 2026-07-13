@@ -1,9 +1,11 @@
+import { join } from 'path';
 import { EventEmitter } from 'events';
 import { CdpClient } from './cdp-client.js';
 import { extractWorkspaceName } from './cdp-bridge.js';
 import type { CDPBridge } from './cdp-bridge.js';
 import type { StateManager } from './state-manager.js';
 import type { DOMExtractor } from './dom-extractor.js';
+import { SnapshotStore } from './snapshot-store.js';
 import type {
   ChatElement,
   Approval,
@@ -45,7 +47,7 @@ export interface WindowSnapshot {
   activeComposerId: string;
 }
 
-const CYCLE_INTERVAL_MS = 10000;
+const DEFAULT_CYCLE_INTERVAL_MS = 3000;
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -131,8 +133,8 @@ function elementsSignature(messages: ChatElement[]): string {
 /**
  * Monitors all Cursor windows using parallel CDP connections.
  * The "home" window is the one connected via the main CDPBridge (polled continuously).
- * Other windows get their own temporary CDP connections every CYCLE_INTERVAL_MS.
- * No window switching — the UI stays on the home window.
+ * Other windows keep persistent auxiliary CDP connections and are polled in parallel
+ * every windowMonitorIntervalMs. No UI window switching — the IDE stays put.
  */
 export class WindowMonitor extends EventEmitter {
   private cdpBridge: CDPBridge;
@@ -140,8 +142,11 @@ export class WindowMonitor extends EventEmitter {
   private extractorFactory: () => DOMExtractor;
   private selectors: SelectorConfig;
   private config: ServerConfig;
+  private cycleIntervalMs: number;
 
   private snapshots = new Map<string, WindowSnapshot>();
+  private auxClients = new Map<string, CdpClient>();
+  private snapshotStore: SnapshotStore;
   private homeWindowId: string | null = null;
   private cycleTimer: ReturnType<typeof setInterval> | null = null;
   private _cycling = false;
@@ -163,7 +168,14 @@ export class WindowMonitor extends EventEmitter {
     this.cdpBridge = cdpBridge;
     this.stateManager = stateManager;
     this.config = config;
+    this.cycleIntervalMs = config.windowMonitorIntervalMs || DEFAULT_CYCLE_INTERVAL_MS;
     this.selectors = selectors ?? {} as SelectorConfig;
+    this.snapshotStore = new SnapshotStore(join(config.dataDir, 'window-snapshots.json'));
+
+    const persisted = this.snapshotStore.load();
+    for (const [id, snap] of persisted) {
+      this.snapshots.set(id, snap);
+    }
 
     this.extractorFactory = () => {
       const { DOMExtractor: ExtClass } = require('./dom-extractor.js') as { DOMExtractor: typeof DOMExtractor };
@@ -175,8 +187,8 @@ export class WindowMonitor extends EventEmitter {
     this.stateManager.on('state:patch', this.onPatch);
     this.cdpBridge.on('connected', this.onConnected);
 
-    this.cycleTimer = setInterval(() => this.cycle(), CYCLE_INTERVAL_MS);
-    console.log(`[window-monitor] Started (parallel mode, cycle every ${CYCLE_INTERVAL_MS / 1000}s)`);
+    this.cycleTimer = setInterval(() => this.cycle(), this.cycleIntervalMs);
+    console.log(`[window-monitor] Started (persistent parallel CDP, cycle every ${this.cycleIntervalMs / 1000}s)`);
   }
 
   stop(): void {
@@ -186,6 +198,47 @@ export class WindowMonitor extends EventEmitter {
       clearInterval(this.cycleTimer);
       this.cycleTimer = null;
     }
+    for (const client of this.auxClients.values()) {
+      client.disconnect();
+    }
+    this.auxClients.clear();
+    this.snapshotStore.flush(this.snapshots);
+  }
+
+  /** Force an immediate poll of all non-home windows (e.g. after user switches window). */
+  triggerCycle(): void {
+    void this.cycle();
+  }
+
+  /**
+   * Push cached snapshot into global state for instant UI while CDP reconnects.
+   * Falls back to window title when windowId changed after Cursor restart.
+   */
+  hydrateStateForWindow(windowId: string, windowTitle?: string): boolean {
+    let snap = this.snapshots.get(windowId);
+    if (!snap && windowTitle) {
+      snap = this.findSnapshotByTitle(windowTitle);
+    }
+    if (!snap) return false;
+    this.stateManager.applyWindowSnapshot(snap);
+    return true;
+  }
+
+  /** Find a snapshot by workspace title (survives Cursor restart / windowId churn). */
+  findSnapshotByTitle(windowTitle: string): WindowSnapshot | undefined {
+    const target = windowTitle.toLowerCase();
+    for (const snap of this.snapshots.values()) {
+      if (snap.windowTitle.toLowerCase() === target) return snap;
+    }
+    return undefined;
+  }
+
+  /** True when a snapshot exists and was updated within maxAgeMs. */
+  isSnapshotFresh(windowId: string, maxAgeMs: number, windowTitle?: string): boolean {
+    let snap = this.snapshots.get(windowId);
+    if (!snap && windowTitle) snap = this.findSnapshotByTitle(windowTitle);
+    if (!snap) return false;
+    return Date.now() - snap.lastUpdated <= maxAgeMs;
   }
 
   setHomeWindow(windowId: string): void {
@@ -207,21 +260,52 @@ export class WindowMonitor extends EventEmitter {
     return this.snapshots;
   }
 
+  /**
+   * Live CDP workbench windows only (switchable).
+   * Closed/cached-only windows are omitted — they cannot be opened from the client.
+   */
+  getWindowsForClient(): CursorWindow[] {
+    return this.cdpBridge.windows.map(w => ({ ...w, available: true }));
+  }
+
+  /** Snapshots for web client optimistic window switch (keyed by windowId). */
+  getSnapshotsForClient(): WindowSnapshot[] {
+    return Array.from(this.snapshots.values()).map((snap) => ({
+      ...snap,
+      // Cap transcript size over the wire / into browser cache
+      messages: snap.messages.slice(-120),
+    }));
+  }
+
+  /** Push live+cached window list into global state. */
+  publishWindows(): void {
+    this.stateManager.updateWindows(this.getWindowsForClient(), this.cdpBridge.activeTargetId);
+  }
+
   private onConnected = (): void => {
     const targetId = this.cdpBridge.activeTargetId;
     if (!this.homeWindowId) {
       this.homeWindowId = targetId;
     }
-    // If we have a cached snapshot for this window, push its mode/model immediately
+    // If we have a cached snapshot for this window, hydrate full state immediately
     // so the web/Telegram clients don't show stale values while waiting for extraction.
     const cached = targetId ? this.snapshots.get(targetId) : undefined;
     if (cached) {
-      this.stateManager.updateModeModel(cached.mode, cached.model);
+      this.stateManager.applyWindowSnapshot(cached);
+    } else if (this._activeWorkspaceNameFallback(targetId)) {
+      const byTitle = this.findSnapshotByTitle(this._activeWorkspaceNameFallback(targetId)!);
+      if (byTitle) this.stateManager.applyWindowSnapshot(byTitle);
     }
     this.captureHomeWindow();
     // Run first cycle immediately so other windows are available for /sync
-    setTimeout(() => this.cycle(), 2000);
+    setTimeout(() => this.cycle(), 500);
   };
+
+  private _activeWorkspaceNameFallback(targetId: string | undefined): string | null {
+    if (!targetId) return null;
+    const win = this.cdpBridge.windows.find(w => w.id === targetId);
+    return win?.title ?? null;
+  }
 
   private onPatch = (): void => {
     this.captureHomeWindow();
@@ -284,6 +368,7 @@ export class WindowMonitor extends EventEmitter {
       || elementsSignature(prev.messages) !== elementsSignature(snapshot.messages);
 
     this.snapshots.set(windowId, snapshot);
+    this.snapshotStore.scheduleSave(this.snapshots);
 
     if (changed) {
       this.emit('window:update', windowId, snapshot);
@@ -317,7 +402,10 @@ export class WindowMonitor extends EventEmitter {
       }
     }
 
-    if (windows.length <= 1) return;
+    if (windows.length <= 1) {
+      this.publishWindows();
+      return;
+    }
 
     const homeId = this.getHomeWindowId();
     const otherWindows = windows.filter(w => w.id !== homeId && w.wsUrl);
@@ -326,17 +414,18 @@ export class WindowMonitor extends EventEmitter {
       if (noWs.length > 0) {
         console.warn(`[window-monitor] ${noWs.length} non-home window(s) have no wsUrl (already debugged?): ${noWs.map(w => w.title).join(', ')}`);
       }
+      this.publishWindows();
       return;
     }
 
     this._cycling = true;
 
     try {
-      this.stateManager.updateWindows(windows, this.cdpBridge.activeTargetId);
+      this.publishWindows();
+      this.pruneAuxClients(otherWindows.map(w => w.id));
 
-      for (const win of otherWindows) {
-        await this.pollWindowParallel(win);
-      }
+      await Promise.all(otherWindows.map(win => this.pollWindowParallel(win)));
+      this.publishWindows();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.warn(`[window-monitor] Cycle error: ${msg}`);
@@ -345,13 +434,42 @@ export class WindowMonitor extends EventEmitter {
     }
   }
 
-  private async pollWindowParallel(win: CursorWindow): Promise<void> {
-    if (!win.wsUrl) return;
+  private pruneAuxClients(activeIds: string[]): void {
+    const active = new Set(activeIds);
+    for (const [id, client] of this.auxClients) {
+      if (!active.has(id)) {
+        client.disconnect();
+        this.auxClients.delete(id);
+      }
+    }
+  }
 
-    const client = new CdpClient();
+  private async getAuxClient(win: CursorWindow): Promise<CdpClient | null> {
+    if (!win.wsUrl) return null;
+
+    let client = this.auxClients.get(win.id);
+    if (client?.isConnected()) return client;
+
+    if (client) {
+      client.disconnect();
+      this.auxClients.delete(win.id);
+    }
+
+    client = new CdpClient();
     try {
       await client.connect(win.wsUrl);
+      this.auxClients.set(win.id, client);
+      return client;
+    } catch {
+      return null;
+    }
+  }
 
+  private async pollWindowParallel(win: CursorWindow): Promise<void> {
+    const client = await this.getAuxClient(win);
+    if (!client) return;
+
+    try {
       const workspaceName = await extractWorkspaceName(client, this.config.windowTitleQualifier);
       const windowTitle = workspaceName ?? win.title;
       if (workspaceName && workspaceName !== win.title) {
@@ -405,6 +523,7 @@ export class WindowMonitor extends EventEmitter {
           || elementsSignature(prev.messages) !== elementsSignature(snapshot.messages);
 
         this.snapshots.set(win.id, snapshot);
+        this.snapshotStore.scheduleSave(this.snapshots);
 
         if (changed) {
           this.emit('window:update', win.id, snapshot);
@@ -415,8 +534,12 @@ export class WindowMonitor extends EventEmitter {
       if (!msg.includes('WebSocket') && !msg.includes('closed')) {
         console.warn(`[window-monitor] Poll "${win.title}" failed: ${msg}`);
       }
-    } finally {
-      client.disconnect();
+      // Drop broken connection so next cycle reconnects
+      const broken = this.auxClients.get(win.id);
+      if (broken) {
+        broken.disconnect();
+        this.auxClients.delete(win.id);
+      }
     }
   }
 

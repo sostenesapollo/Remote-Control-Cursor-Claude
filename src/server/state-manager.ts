@@ -221,6 +221,46 @@ export class StateManager extends EventEmitter {
     this.emit('state:patch', patch);
   }
 
+  /**
+   * Hydrate the active window's UI state from a cached per-window snapshot.
+   * Used on window switch so the web/Telegram client shows content immediately
+   * while the DOM extractor catches up on the new CDP target.
+   */
+  applyWindowSnapshot(snapshot: {
+    messages: CursorState['messages'];
+    chatTabs: CursorState['chatTabs'];
+    pendingApprovals: CursorState['pendingApprovals'];
+    agentStatus: CursorState['agentStatus'];
+    agentActivityText: CursorState['agentActivityText'];
+    agentActivityLive: CursorState['agentActivityLive'];
+    agentActivitySource: CursorState['agentActivitySource'];
+    composerQueue: CursorState['composerQueue'];
+    mode: CursorState['mode'];
+    model: CursorState['model'];
+    questionnaire: CursorState['questionnaire'];
+    activeComposerId: CursorState['activeComposerId'];
+  }): void {
+    const next: CursorState = {
+      ...this.currentState,
+      messages: snapshot.messages,
+      chatTabs: snapshot.chatTabs,
+      pendingApprovals: snapshot.pendingApprovals,
+      agentStatus: snapshot.agentStatus,
+      agentActivityText: snapshot.agentActivityText,
+      agentActivityLive: snapshot.agentActivityLive,
+      agentActivitySource: snapshot.agentActivitySource,
+      composerQueue: snapshot.composerQueue,
+      mode: snapshot.mode,
+      model: snapshot.model,
+      questionnaire: snapshot.questionnaire,
+      activeComposerId: snapshot.activeComposerId,
+    };
+    const patch = this.diff(this.currentState, next);
+    if (!patch) return;
+    this.currentState = next;
+    this.emit('state:patch', patch);
+  }
+
   private diff(
     prev: CursorState,
     next: CursorState

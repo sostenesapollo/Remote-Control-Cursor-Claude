@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#0a0b0d">
+  <meta name="description" content="Controle o Cursor AI do seu Mac/PC pelo celular. Instale a extensão, abra o Setup e conecte.">
+  <title>CursorRemote — controle o Cursor pelo celular</title>
+  <link rel="icon" type="image/png" href="/app/favicon.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/landing.css">
+</head>
+<body>
+  <div class="bg" aria-hidden="true"></div>
+
+  <header class="top">
+    <a class="brand" href="/">CursorRemote</a>
+    <nav class="top-nav">
+      <a href="#como">Como usa</a>
+      <a href="#instalar">Instalar</a>
+      <a class="top-cta" href="/download/cursor-remote.vsix">Baixar extensão</a>
+    </nav>
+  </header>
+
+  <main>
+    <section class="hero">
+      <p class="brand-mark">CursorRemote</p>
+      <h1>Seu Cursor no Mac.<br>Você no celular.</h1>
+      <p class="lede">Monitore o agent, aprove passos e mande tarefas de qualquer lugar. A extensão sobe o server na sua máquina; o celular só se conecta.</p>
+      <div class="cta-row">
+        <a class="btn btn-primary" href="/download/cursor-remote.vsix" download>Baixar extensão .vsix</a>
+        <a class="btn btn-ghost" href="/app">Abrir painel remoto</a>
+      </div>
+      <p class="meta">v<span id="ver">0.1.53</span> · macOS, Windows e Linux · sem marketplace</p>
+    </section>
+
+    <section class="flow" id="como">
+      <h2>Fluxo em 4 passos</h2>
+      <ol class="steps">
+        <li>
+          <span class="step-num">1</span>
+          <div>
+            <strong>Instale a extensão</strong>
+            <p>Baixe o <code>.vsix</code> e instale no Cursor (Command Palette → Install from VSIX).</p>
+          </div>
+        </li>
+        <li>
+          <span class="step-num">2</span>
+          <div>
+            <strong>Abra o Cursor com CDP</strong>
+            <p>Feche o Cursor (<kbd>Cmd+Q</kbd>) e abra de novo com debug port. Sem isso a extensão não enxerga o agent.</p>
+          </div>
+        </li>
+        <li>
+          <span class="step-num">3</span>
+          <div>
+            <strong>Copie o pairing code</strong>
+            <p><kbd>Cmd+Shift+P</kbd> → <strong>CursorRemote: Open Setup Panel</strong>. O server sobe sozinho.</p>
+          </div>
+        </li>
+        <li>
+          <span class="step-num">4</span>
+          <div>
+            <strong>Conecte o celular</strong>
+            <p>Mesma Wi‑Fi: abra <code>http://IP-DO-MAC:3000/app</code> e cole o código. Fora de casa use Tailscale ou ngrok.</p>
+          </div>
+        </li>
+      </ol>
+    </section>
+
+    <section class="install" id="instalar">
+      <h2>Instalar de verdade</h2>
+
+      <div class="install-block">
+        <h3>1. Extensão</h3>
+        <p>No Cursor: <kbd>Cmd+Shift+P</kbd> (Windows: <kbd>Ctrl+Shift+P</kbd>) → <strong>Extensions: Install from VSIX...</strong> → escolha o arquivo baixado. Recarregue se pedir.</p>
+        <pre class="code"><code>cursor --install-extension ~/Downloads/cursor-remote-0.1.53.vsix</code></pre>
+      </div>
+
+      <div class="install-block">
+        <h3>2. Cursor com CDP</h3>
+        <pre class="code"><code># macOS (Fish)
+open -a Cursor --args --remote-debugging-port=9222
+
+# Windows (PowerShell)
+& "$env:LOCALAPPDATA\Programs\cursor\Cursor.exe" --remote-debugging-port=9222
+
+# Linux
+cursor --remote-debugging-port=9222</code></pre>
+        <p class="hint">Confira: <code>http://localhost:9222/json</code> deve devolver JSON.</p>
+      </div>
+
+      <div class="install-block">
+        <h3>3. Setup + celular</h3>
+        <ul class="checklist">
+          <li>Sidebar <strong>CursorRemote</strong> → Server Running</li>
+          <li>Setup Panel → copie o pairing code (ex. <code>ABC-DEF</code>)</li>
+          <li>No celular, abra o painel e cole o código</li>
+        </ul>
+        <p>Cada pessoa controla o <strong>próprio</strong> Cursor. A extensão roda na máquina dela; não é o server de outra pessoa.</p>
+      </div>
+    </section>
+
+    <section class="phone" id="celular">
+      <h2>No celular</h2>
+      <p>Browser ou app Android. Mesma Wi‑Fi, ou Tailscale se estiver fora.</p>
+      <div class="phone-actions">
+        <a class="btn btn-primary" href="/app">Abrir painel web</a>
+        <a class="btn btn-ghost" href="/download/cursor-remote.apk" download>APK Android</a>
+      </div>
+      <p class="hint">No app Setup: URL do seu Mac (ex. <code>192.168.x.x:3000</code>) + pairing code.</p>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <p>CursorRemote · <a href="/download/cursor-remote.vsix">.vsix</a> · <a href="/app">painel</a> · <a href="https://github.com/len5ky/CursorRemote">GitHub</a></p>
+  </footer>
+
+  <script>
+    fetch('/health').then(r => r.json()).then(d => {
+      if (d && d.version) document.getElementById('ver').textContent = d.version;
+    }).catch(() => {});
+  </script>
+</body>
+</html>

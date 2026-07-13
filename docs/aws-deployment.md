@@ -44,6 +44,23 @@ ssh -i ~/.ssh/cursor-remote-aws.pem -o StrictHostKeyChecking=no ec2-user@18.228.
   'cd /opt/cursorremote/app && npm install --omit=dev --no-audit --no-fund && pm2 restart cursorremote'
 ```
 
+## Public domain
+
+- **URL**: `https://connect.blocks.pw` (live)
+- **Path**: Cloudflare → Coolify (`cursorremote-connect` nginx) → AWS EC2 `18.228.116.226:3000`
+- Coolify app uuid: `xrddqbt8el2otdxcbwzh1l9j` (project `blocks.pw`)
+- Optional direct TLS on EC2: Caddy on `:80`/`:443` (cert needs DNS-only A to the instance)
+- Helper if you want a grey-cloud A record: `fish scripts/dns-connect-blocks.fish` (`CF_API_TOKEN`)
+
+Routes on the relay:
+
+| Path | Purpose |
+|---|---|
+| `/` | Landing (install + download) |
+| `/app` | Web remote client |
+| `/download/cursor-remote.vsix` | Extension package |
+| `/download/cursor-remote.apk` | Android APK |
+
 ## Connecting clients
 
 The relay listens on `http://18.228.116.226:3000`.

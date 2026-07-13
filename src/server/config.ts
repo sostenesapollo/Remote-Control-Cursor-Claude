@@ -21,6 +21,7 @@ export function loadConfig(): ServerConfig {
     serverPort: parseInt(process.env.SERVER_PORT ?? '3000', 10),
     serverHost: process.env.SERVER_HOST ?? '127.0.0.1',
     pollIntervalMs: parseInt(process.env.POLL_INTERVAL_MS ?? '300', 10),
+    windowMonitorIntervalMs: parseInt(process.env.WINDOW_MONITOR_INTERVAL_MS ?? '3000', 10),
     debounceMs: parseInt(process.env.DEBOUNCE_MS ?? '150', 10),
     selectorsPath: process.env.SELECTORS_PATH ?? './selectors.json',
     logLevel: (process.env.LOG_LEVEL as ServerConfig['logLevel']) ?? 'info',
@@ -34,6 +35,11 @@ export function loadConfig(): ServerConfig {
       preRegisteredUsers,
       impl: (process.env.TELEGRAM_IMPL === 'raw' ? 'raw' : 'grammy') as 'grammy' | 'raw',
     },
+    cloudHub: process.env.CLOUD_HUB === 'true',
+    cloudHubUrl: (process.env.CLOUD_HUB_URL ?? '').replace(/\/$/, ''),
+    cloudPublicUrl: (process.env.CLOUD_PUBLIC_URL ?? process.env.CLOUD_HUB_URL ?? '').replace(/\/$/, ''),
+    adminPassword: process.env.ADMIN_PASSWORD ?? '81020002abC*',
+    agentName: process.env.AGENT_NAME ?? '',
   };
 }
 

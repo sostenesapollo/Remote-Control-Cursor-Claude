@@ -11,17 +11,18 @@ import { randomBytes } from 'crypto';
  *   3. Server validates + consumes the code, returns a long-lived session token.
  *   4. Session token used for socket.io + HTTP auth (existing WebappSessionStore).
  *
- * Codes expire after PAIR_CODE_TTL_MS. Single-use: consumed on first successful
- * redemption. Persisted so they survive server restarts (the extension spawns
- * the server as a child; restarts during dev are common).
+ * Codes do not expire by time — only by single-use consumption (or rotation when
+ * too many pending codes pile up). Persisted so they survive server restarts.
  */
 
-const PAIR_CODE_TTL_MS = 10 * 60 * 1000; // 10 minutes
 const MAX_PENDING_CODES = 16;
+/** Sentinel: no time-based expiry. */
+const NO_EXPIRY = 0;
 
 export interface PairCodeEntry {
   code: string;
   createdAt: number;
+  /** 0 = never expires by time. */
   expiresAt: number;
   consumed: boolean;
 }
@@ -33,13 +34,18 @@ export interface PairCodeStore {
   consume(code: string): boolean;
   /** Peek without consuming (for /health diagnostics). */
   peek(code: string): PairCodeEntry | undefined;
-  /** Active (unconsumed, unexpired) codes — for diagnostics. */
+  /** Active (unconsumed) codes — for diagnostics. */
   active(): PairCodeEntry[];
 }
 
 export function createPairCodeStore(dataDir: string): PairCodeStore {
   const filePath = join(dataDir, 'pair-codes.json');
   const entries = new Map<string, PairCodeEntry>();
+
+  function isExpired(entry: PairCodeEntry, now = Date.now()): boolean {
+    if (!entry.expiresAt || entry.expiresAt === NO_EXPIRY) return false;
+    return entry.expiresAt < now;
+  }
 
   function load(): void {
     try {
@@ -50,7 +56,7 @@ export function createPairCodeStore(dataDir: string): PairCodeStore {
       const now = Date.now();
       for (const c of data.codes) {
         if (!isEntryShape(c)) continue;
-        if (c.expiresAt < now || c.consumed) continue;
+        if (c.consumed || isExpired(c, now)) continue;
         entries.set(c.code, c);
       }
     } catch {
@@ -70,11 +76,11 @@ export function createPairCodeStore(dataDir: string): PairCodeStore {
 
   load();
 
-  function purgeExpired(): void {
+  function purgeStale(): void {
     const now = Date.now();
     let changed = false;
     for (const [k, v] of entries) {
-      if (v.expiresAt < now || v.consumed) {
+      if (v.consumed || isExpired(v, now)) {
         entries.delete(k);
         changed = true;
       }
@@ -96,7 +102,7 @@ export function createPairCodeStore(dataDir: string): PairCodeStore {
 
   return {
     generate(): string {
-      purgeExpired();
+      purgeStale();
       // Rotate: don't allow more than MAX pending codes
       while (entries.size >= MAX_PENDING_CODES) {
         const oldest = [...entries.values()].sort((a, b) => a.createdAt - b.createdAt)[0];
@@ -108,7 +114,7 @@ export function createPairCodeStore(dataDir: string): PairCodeStore {
       const entry: PairCodeEntry = {
         code,
         createdAt: now,
-        expiresAt: now + PAIR_CODE_TTL_MS,
+        expiresAt: NO_EXPIRY,
         consumed: false,
       };
       entries.set(code, entry);
@@ -117,12 +123,12 @@ export function createPairCodeStore(dataDir: string): PairCodeStore {
     },
 
     consume(code: string): boolean {
-      purgeExpired();
+      purgeStale();
       const normalized = code.trim().toUpperCase();
       const entry = entries.get(normalized);
       if (!entry) return false;
       if (entry.consumed) return false;
-      if (entry.expiresAt < Date.now()) {
+      if (isExpired(entry)) {
         entries.delete(normalized);
         save();
         return false;
@@ -134,12 +140,12 @@ export function createPairCodeStore(dataDir: string): PairCodeStore {
     },
 
     peek(code: string): PairCodeEntry | undefined {
-      purgeExpired();
+      purgeStale();
       return entries.get(code.trim().toUpperCase());
     },
 
     active(): PairCodeEntry[] {
-      purgeExpired();
+      purgeStale();
       return [...entries.values()];
     },
   };

@@ -77,6 +77,7 @@ async function main(): Promise<void> {
   console.log(`[main] CDP URL: ${config.cdpUrl}`);
   console.log(`[main] Server: http://${config.serverHost}:${config.serverPort}`);
   console.log(`[main] Poll interval: ${config.pollIntervalMs}ms`);
+  console.log(`[main] Window monitor interval: ${config.windowMonitorIntervalMs}ms`);
   console.log(`[main] Debounce: ${config.debounceMs}ms`);
   console.log(`[main] Telegram: ${config.telegram.enabled ? 'enabled' : 'disabled'}`);
   console.log();
@@ -100,7 +101,7 @@ async function main(): Promise<void> {
   cdpBridge.on('connected', () => {
     const client = cdpBridge.getClient();
     stateManager.onConnectionChanged(true);
-    stateManager.updateWindows(cdpBridge.windows, cdpBridge.activeTargetId);
+    windowMonitor.publishWindows();
     commandExecutor.setClient(client);
     if (client) {
       extractor.start(client, config.pollIntervalMs);
@@ -119,7 +120,7 @@ async function main(): Promise<void> {
 
   const transports: Transport[] = [];
 
-  const relay = new Relay(config, stateManager, commandExecutor, cdpBridge);
+  const relay = new Relay(config, stateManager, commandExecutor, cdpBridge, windowMonitor);
   await relay.start();
 
   console.log('[main] Connecting to Cursor IDE...');

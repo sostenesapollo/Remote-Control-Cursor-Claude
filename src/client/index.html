@@ -2,11 +2,18 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <meta name="theme-color" content="#0d0d12">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="CursorRemote">
+  <meta name="application-name" content="CursorRemote">
+  <meta name="description" content="Control your Cursor AI agent from anywhere">
   <title>CursorRemote</title>
+  <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" type="image/png" href="favicon.png">
-  <link rel="apple-touch-icon" href="favicon.png">
+  <link rel="apple-touch-icon" href="icon-192.png">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -37,20 +44,6 @@
       </div>
     </div>
 
-    <header id="header">
-      <div class="header-left">
-        <span id="agent-status-icon" class="agent-status-icon"></span>
-        <span id="agent-status-text" class="agent-status-text">Idle</span>
-      </div>
-      <div class="header-right">
-        <button id="btn-unpair" class="icon-btn hidden" aria-label="Unpair">
-          <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
-            <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 6.8c-.34 2.12-1.97 4.95-2.79 6.12-.81 1.17-1.68 2.13-2.34 2.88-.16.18-.44.06-.42-.16.12-1.02.24-2.13.16-2.88-.06-.56-.42-1.02-1-1.06-.84-.06-2.02.16-2.94.36-.18.04-.3-.14-.18-.28.34-.36 1.97-1.95 2.79-3.12.81-1.17 1.68-2.13 2.34-2.88.16-.18.44-.06.42.16-.12 1.02-.24 2.13-.16 2.88.06.56.42 1.02 1 1.06.84.06 2.02-.16 2.94-.36.18-.04.3.14.18.28z"/>
-          </svg>
-        </button>
-      </div>
-    </header>
-
     <div id="composer-queue-bar" class="composer-queue-bar hidden" aria-live="polite">
       <div class="composer-queue-header">
         <span class="composer-queue-chevron" aria-hidden="true">&#9660;</span>
@@ -59,11 +52,7 @@
       <div id="composer-queue-items" class="composer-queue-items"></div>
     </div>
 
-    <nav id="window-bar" class="window-bar hidden">
-      <div id="window-list" class="window-list"></div>
-    </nav>
-
-    <nav id="tab-bar" class="tab-bar hidden">
+    <nav id="tab-bar" class="tab-bar hidden" aria-label="Chats">
       <div id="tab-list" class="tab-list"></div>
       <button id="btn-new-chat" class="tab-new-btn" aria-label="New Chat">+</button>
     </nav>
@@ -97,16 +86,8 @@
     </div>
 
     <footer id="input-bar">
-      <div id="mode-model-bar" class="mode-model-bar">
-        <button id="pill-mode" class="pill" aria-label="Select mode">
-          <span id="pill-mode-icon" class="pill-icon"></span>
-          <span id="pill-mode-text">Agent</span>
-          <span class="pill-chevron">&#9662;</span>
-        </button>
-        <button id="pill-model" class="pill" aria-label="Select model">
-          <span id="pill-model-text">Auto</span>
-          <span class="pill-chevron">&#9662;</span>
-        </button>
+      <div id="agent-activity-strip" class="agent-activity-strip hidden" aria-live="polite">
+        <span id="agent-status-text" class="agent-status-text">Idle</span>
       </div>
       <div class="input-wrapper">
         <textarea
@@ -119,6 +100,32 @@
           <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
             <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
           </svg>
+        </button>
+      </div>
+      <div id="mode-model-bar" class="mode-model-bar">
+        <button id="pill-mode" class="pill" aria-label="Select mode">
+          <span id="pill-mode-icon" class="pill-icon"></span>
+          <span id="pill-mode-text">Agent</span>
+          <span class="pill-chevron">&#9662;</span>
+        </button>
+        <button id="pill-model" class="pill" aria-label="Select model">
+          <span id="pill-model-text">Auto</span>
+          <span class="pill-chevron">&#9662;</span>
+        </button>
+        <button id="pill-window" class="pill pill-window hidden" aria-label="Switch window">
+          <svg class="pill-window-icon" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <rect x="3" y="5" width="18" height="14" rx="2"/>
+            <path d="M3 9h18"/>
+          </svg>
+          <span id="pill-window-text">Window</span>
+          <span id="window-sync" class="window-sync window-sync-live" title="Live" aria-hidden="true"></span>
+          <span class="pill-chevron">&#9662;</span>
+        </button>
+        <button id="conn-chip" class="conn-chip" aria-label="Connection">
+          <svg class="conn-bolt" viewBox="0 0 24 24" width="10" height="10" fill="currentColor" aria-hidden="true">
+            <path d="M13 2L4.5 13.5H11L9.5 22 19 10h-6.5L13 2z"/>
+          </svg>
+          <span id="conn-chip-text">connected</span>
         </button>
       </div>
     </footer>
@@ -136,6 +143,14 @@
       <div id="sheet-plan-model-header" class="sheet-header">Plan Model</div>
       <div id="sheet-plan-model-list" class="sheet-list"></div>
     </div>
+    <div id="sheet-window" class="bottom-sheet hidden">
+      <div class="sheet-header">Window</div>
+      <div id="sheet-window-list" class="sheet-list"></div>
+    </div>
+    <div id="sheet-connection" class="bottom-sheet hidden">
+      <div class="sheet-header">Connection</div>
+      <div id="sheet-connection-body" class="sheet-connection-body"></div>
+    </div>
   </div>
 
   <div id="plan-modal-overlay" class="plan-modal-overlay hidden">
@@ -152,6 +167,15 @@
   </div>
 
   <div id="toast-container"></div>
+
+  <div id="install-banner" class="install-banner hidden" role="dialog" aria-label="Install app">
+    <div class="install-banner-text">
+      <strong>Install CursorRemote</strong>
+      <span>Add to your home screen for quick access</span>
+    </div>
+    <button type="button" id="install-banner-btn" class="install-banner-btn">Install</button>
+    <button type="button" id="install-banner-dismiss" class="install-banner-dismiss" aria-label="Dismiss">×</button>
+  </div>
 
   <script src="vendor-socket.io.min.js"></script>
   <script src="app.js"></script>

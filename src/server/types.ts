@@ -4,6 +4,8 @@ export interface CursorWindow {
   title: string;
   url: string;
   wsUrl?: string;
+  /** False when only known from a persisted snapshot (Cursor window closed / gone). */
+  available?: boolean;
 }
 
 /** Raw DOM element snapshot — what was actually in the DOM, independent of parsing. */
@@ -340,6 +342,8 @@ export interface ServerConfig {
   serverPort: number;
   serverHost: string;
   pollIntervalMs: number;
+  /** How often non-home Cursor windows are polled via parallel CDP (ms). */
+  windowMonitorIntervalMs: number;
   debounceMs: number;
   selectorsPath: string;
   logLevel: 'debug' | 'info' | 'warn' | 'error';
@@ -349,6 +353,16 @@ export interface ServerConfig {
   windowTitleQualifier: boolean;
   dataDir: string;
   telegram: TelegramConfig;
+  /** This process is the public multi-tenant hub (no local CDP). */
+  cloudHub: boolean;
+  /** Local relay dials this hub URL for remote phone access (e.g. https://connect.blocks.pw). */
+  cloudHubUrl: string;
+  /** Public URL advertised to agents (optional). */
+  cloudPublicUrl: string;
+  /** Admin password for /list-table (cloud hub). */
+  adminPassword: string;
+  /** Display name for this agent when registering on the hub. */
+  agentName: string;
 }
 
 export interface TelegramConfig {
