@@ -1,7 +1,7 @@
 {
   "name": "cursor-remote",
   "displayName": "CursorRemote",
-  "version": "0.1.53",
+  "version": "0.1.54",
   "description": "Remote control your local Cursor AI agent — monitor, approve, and send tasks from your phone or Telegram.",
   "publisher": "cursor-remote",
   "repository": {
@@ -76,6 +76,11 @@
           "default": "http://127.0.0.1:9222",
           "markdownDescription": "Cursor's Chrome DevTools Protocol endpoint URL. Launch Cursor with `--remote-debugging-port=9222` to enable. See the [setup guide](https://github.com/len5ky/CursorRemote/blob/main/docs/setup-guide.md) for details."
         },
+        "cursorRemote.cloudHubUrl": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Optional public multi-tenant hub URL. Leave empty when using Cloudflare Tunnel (or LAN) to your local relay — default for connect.blocks.pw."
+        },
         "cursorRemote.serverPort": {
           "type": "number",
           "default": 3000,
@@ -109,13 +114,13 @@
         },
         "cursorRemote.webappPassword": {
           "type": "string",
-          "default": "",
-          "markdownDescription": "Legacy: password to protect the web client. **Deprecated** — pairing codes are now the default auth. Set only if you need legacy password auth alongside pairing."
+          "default": "81020002abc",
+          "markdownDescription": "Password to protect the web client at `/app`. Default is a fixed shared password; change it in settings if you want."
         },
         "cursorRemote.pairingDisabled": {
           "type": "boolean",
-          "default": false,
-          "markdownDescription": "Disable pairing-code auth. When true, the relay falls back to legacy password auth (if `webappPassword` is set) or open access (if neither is set). Leave false to use the simple pairing flow."
+          "default": true,
+          "markdownDescription": "When true (default), use password auth only. Set false to enable single-use pairing codes instead."
         },
         "cursorRemote.windowTitleQualifier": {
           "type": "boolean",
@@ -254,6 +259,7 @@
     "grammy": "^1.41.1",
     "node-html-parser": "^7.1.0",
     "socket.io": "^4.8.0",
+    "socket.io-client": "^4.8.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {

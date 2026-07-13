@@ -1,0 +1,23 @@
+# Cloud hub image for connect.blocks.pw (multi-tenant relay)
+FROM node:20-bookworm-slim
+
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev --no-audit --no-fund
+
+COPY dist ./dist
+COPY selectors.json ./selectors.json
+
+ENV NODE_ENV=production \
+    CLOUD_HUB=true \
+    SERVER_HOST=0.0.0.0 \
+    SERVER_PORT=3000 \
+    PAIRING_DISABLED=false \
+    DATA_DIR=/app/data \
+    CLOUD_PUBLIC_URL=https://connect.blocks.pw
+
+RUN mkdir -p /app/data /app/temp
+
+EXPOSE 3000
+CMD ["node", "dist/server/index.js"]

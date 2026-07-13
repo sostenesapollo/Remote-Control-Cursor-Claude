@@ -1501,6 +1501,11 @@ export function extractionFunction(
       return t.trim().substring(0, 120);
     }
 
+    // Cursor renders a spinning-loader icon in place of the static tab icon
+    // while an agent is actively working — ground truth for "in progress",
+    // confirmed by probing the live sidebar DOM rather than guessing.
+    const tabIsBusy = (tab: Element): boolean => tab.querySelector('.spinning-loader') !== null;
+
     try {
       const seenTitles = new Set<string>();
       let scopeRoot: Element | null = null;
@@ -1568,6 +1573,7 @@ export function extractionFunction(
             title: displayTitle,
             isActive,
             status: isActive ? 'active' : 'idle',
+            isBusy: tabIsBusy(tab),
             selectorPath: buildSelectorPath(tab),
           });
         }
@@ -1629,6 +1635,7 @@ export function extractionFunction(
             title,
             isActive,
             status: isActive ? 'active' : 'idle',
+            isBusy: tabIsBusy(tab),
             selectorPath: buildSelectorPath(tab),
           });
         }

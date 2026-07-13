@@ -56,15 +56,15 @@
         <li>
           <span class="step-num">3</span>
           <div>
-            <strong>Copie o pairing code</strong>
-            <p><kbd>Cmd+Shift+P</kbd> → <strong>CursorRemote: Open Setup Panel</strong>. O server sobe sozinho.</p>
+            <strong>Use a senha de acesso</strong>
+            <p><kbd>Cmd+Shift+P</kbd> → <strong>CursorRemote: Open Setup Panel</strong>. O server sobe sozinho. Senha padrão: <code>81020002abc</code>.</p>
           </div>
         </li>
         <li>
           <span class="step-num">4</span>
           <div>
             <strong>Conecte o celular</strong>
-            <p>Mesma Wi‑Fi: abra <code>http://IP-DO-MAC:3000/app</code> e cole o código. Fora de casa use Tailscale ou ngrok.</p>
+            <p>Abra <a href="https://connect.blocks.pw/app"><code>connect.blocks.pw/app</code></a> e entre com a senha. Sem ngrok — o Cloudflare Tunnel aponta pro seu Mac.</p>
           </div>
         </li>
       </ol>
@@ -96,8 +96,8 @@ cursor --remote-debugging-port=9222</code></pre>
         <h3>3. Setup + celular</h3>
         <ul class="checklist">
           <li>Sidebar <strong>CursorRemote</strong> → Server Running</li>
-          <li>Setup Panel → copie o pairing code (ex. <code>ABC-DEF</code>)</li>
-          <li>No celular, abra o painel e cole o código</li>
+          <li>No celular, abra o painel e entre com a senha <code>81020002abc</code></li>
+          <li>Troque a senha em Settings → <code>cursorRemote.webappPassword</code> se quiser</li>
         </ul>
         <p>Cada pessoa controla o <strong>próprio</strong> Cursor. A extensão roda na máquina dela; não é o server de outra pessoa.</p>
       </div>
@@ -110,7 +110,7 @@ cursor --remote-debugging-port=9222</code></pre>
         <a class="btn btn-primary" href="/app">Abrir painel web</a>
         <a class="btn btn-ghost" href="/download/cursor-remote.apk" download>APK Android</a>
       </div>
-      <p class="hint">No app Setup: URL do seu Mac (ex. <code>192.168.x.x:3000</code>) + pairing code.</p>
+      <p class="hint">Painel: <code>https://connect.blocks.pw/app</code> + senha <code>81020002abc</code>.</p>
     </section>
   </main>
 

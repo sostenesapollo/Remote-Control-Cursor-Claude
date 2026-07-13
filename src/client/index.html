@@ -27,19 +27,19 @@
         <div class="onboarding-steps">
           <div class="onboarding-step">
             <span class="onboarding-step-num">1</span>
-            <span class="onboarding-step-text">Open <strong>CursorRemote: Setup</strong> in Cursor's command palette</span>
+            <span class="onboarding-step-text">Keep Cursor + CursorRemote running on your Mac</span>
           </div>
           <div class="onboarding-step">
             <span class="onboarding-step-num">2</span>
-            <span class="onboarding-step-text">Copy the <strong>pairing code</strong></span>
+            <span class="onboarding-step-text">Open <strong>https://connect.blocks.pw/app</strong></span>
           </div>
           <div class="onboarding-step">
             <span class="onboarding-step-num">3</span>
-            <span class="onboarding-step-text">Paste it below to connect</span>
+            <span class="onboarding-step-text">Enter the <strong>access password</strong></span>
           </div>
         </div>
-        <input type="text" class="pair-code-input" id="onboarding-code" placeholder="XXX-XXX" autocomplete="one-time-code">
-        <button class="pair-btn" id="onboarding-pair-btn">Connect</button>
+        <input type="password" class="pair-code-input" id="onboarding-code" placeholder="Password" autocomplete="current-password">
+        <button class="pair-btn" id="onboarding-pair-btn">Sign in</button>
         <p class="onboarding-error" id="onboarding-error"></p>
       </div>
     </div>
@@ -51,11 +51,6 @@
       </div>
       <div id="composer-queue-items" class="composer-queue-items"></div>
     </div>
-
-    <nav id="tab-bar" class="tab-bar hidden" aria-label="Chats">
-      <div id="tab-list" class="tab-list"></div>
-      <button id="btn-new-chat" class="tab-new-btn" aria-label="New Chat">+</button>
-    </nav>
 
     <main id="messages" role="log" aria-live="polite">
       <div id="empty-state" class="empty-state">
@@ -128,6 +123,11 @@
           <span id="conn-chip-text">connected</span>
         </button>
       </div>
+
+      <nav id="tab-bar" class="tab-bar hidden" aria-label="Chats">
+        <div id="tab-list" class="tab-list"></div>
+        <button id="btn-new-chat" class="tab-new-btn" aria-label="New Chat">+</button>
+      </nav>
     </footer>
 
     <div id="sheet-overlay" class="sheet-overlay hidden"></div>

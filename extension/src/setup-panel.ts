@@ -28,6 +28,8 @@ export class SetupPanel {
   private _disposed = false;
   private _pairCode = '';
   private _pairCodeExpiry = 0;
+  private _cloudHubUrl = '';
+  private _pairMode: 'cloud' | 'local' | '' = '';
   private _pollTimer: ReturnType<typeof setInterval> | null = null;
 
   public static createOrShow(context: vscode.ExtensionContext): void {
@@ -83,9 +85,16 @@ export class SetupPanel {
         signal: AbortSignal.timeout(3000),
       });
       if (res.ok) {
-        const data = await res.json() as { code?: string; expiresInMs?: number | null };
+        const data = await res.json() as {
+          code?: string;
+          expiresInMs?: number | null;
+          cloudHubUrl?: string;
+          mode?: 'cloud' | 'local';
+        };
         if (data.code) {
           this._pairCode = data.code;
+          this._cloudHubUrl = data.cloudHubUrl ?? '';
+          this._pairMode = data.mode ?? '';
           // null/0 = no time expiry (single-use only)
           this._pairCodeExpiry = data.expiresInMs
             ? Date.now() + data.expiresInMs
@@ -134,6 +143,12 @@ export class SetupPanel {
           await vscode.env.clipboard.writeText(this._pairCode);
           vscode.window.showInformationMessage('Pairing code copied.');
         }
+        break;
+      }
+      case 'copyPassword': {
+        const password = config.get<string>('webappPassword', '81020002abc') || '81020002abc';
+        await vscode.env.clipboard.writeText(password);
+        vscode.window.showInformationMessage('Password copied.');
         break;
       }
       case 'openWebClient': {
@@ -201,9 +216,11 @@ export class SetupPanel {
     const state = {
       pairCode: this._pairCode,
       pairCodeExpirySec: codeExpirySec,
+      cloudHubUrl: this._cloudHubUrl,
+      pairMode: this._pairMode,
       serverHost: config.get<string>('serverHost', '127.0.0.1'),
       serverPort: config.get<number>('serverPort', 3000),
-      webappPassword: config.get<string>('webappPassword', ''),
+      webappPassword: config.get<string>('webappPassword', '81020002abc') || '81020002abc',
       telegramEnabled: config.get<boolean>('telegram.enabled', false),
       telegramBotToken: telegramBotToken ?? '',
       telegramImpl: config.get<string>('telegram.impl', 'grammy'),
@@ -227,6 +244,8 @@ export class SetupPanel {
 interface PanelState {
   pairCode: string;
   pairCodeExpirySec: number;
+  cloudHubUrl: string;
+  pairMode: string;
   serverHost: string;
   serverPort: number;
   webappPassword: string;
@@ -245,11 +264,6 @@ function getWebviewContent(state: PanelState): string {
   const maskedToken = hasBotToken
     ? state.telegramBotToken.slice(0, 6) + '...' + state.telegramBotToken.slice(-4)
     : '';
-  const codeExpiryText = state.pairCodeExpirySec < 0
-    ? 'Does not expire (single-use)'
-    : state.pairCodeExpirySec > 0
-      ? `Expires in ${Math.floor(state.pairCodeExpirySec / 60)}m ${state.pairCodeExpirySec % 60}s`
-      : '';
 
   return /*html*/ `<!DOCTYPE html>
 <html lang="en">
@@ -421,16 +435,14 @@ function getWebviewContent(state: PanelState): string {
 </head>
 <body>
   <h1>CursorRemote Setup</h1>
-  <p class="subtitle">Pair your phone or any browser to control Cursor remotely.</p>
+  <p class="subtitle">Open the web client on your phone and sign in with the password below.</p>
 
   <div class="pair-card">
-    <h2>Pairing Code</h2>
-    <p>Open CursorRemote on your phone (or any browser) and enter this code. It expires in 10 minutes and works once.</p>
-    <div class="pair-code ${state.pairCode ? '' : 'empty'}" id="pair-code">${state.pairCode ? escapeHtml(state.pairCode) : 'Generating...'}</div>
-    ${state.pairCode ? `<div class="pair-expiry">${codeExpiryText}</div>` : ''}
+    <h2>Access password</h2>
+    <p>Open <strong>https://connect.blocks.pw/app</strong> (or the local web client) and enter this password.</p>
+    <div class="pair-code" id="pair-code">${escapeHtml(state.webappPassword || '81020002abc')}</div>
     <div class="pair-actions">
-      ${state.pairCode ? '<button id="copyCode">Copy code</button>' : ''}
-      <button class="secondary" id="regenerateCode">Regenerate</button>
+      <button id="copyPassword">Copy password</button>
     </div>
   </div>
 
@@ -438,7 +450,7 @@ function getWebviewContent(state: PanelState): string {
     <h3>How to connect</h3>
     <div class="steps">
       <div class="step">
-        <div class="step-num ${state.pairCode ? 'done' : ''}">1</div>
+        <div class="step-num done">1</div>
         <div class="step-text">
           <strong>Start the server</strong>
           <span>The server runs automatically on extension load. If it's not running, click below.</span>
@@ -448,14 +460,14 @@ function getWebviewContent(state: PanelState): string {
         <div class="step-num">2</div>
         <div class="step-text">
           <strong>Open CursorRemote on your phone</strong>
-          <span>Install the app or open the web client in any browser.</span>
+          <span>Use <code>https://connect.blocks.pw/app</code> (Cloudflare Tunnel) or the LAN URL.</span>
         </div>
       </div>
       <div class="step">
         <div class="step-num">3</div>
         <div class="step-text">
-          <strong>Enter the pairing code above</strong>
-          <span>The code is single-use. Generate a new one anytime to pair more devices.</span>
+          <strong>Enter the password above</strong>
+          <span>Change it anytime in Cursor settings → <code>cursorRemote.webappPassword</code>.</span>
         </div>
       </div>
       <div class="step">
@@ -588,6 +600,7 @@ function getWebviewContent(state: PanelState): string {
       });
     });
 
+    document.getElementById('copyPassword')?.addEventListener('click', () => sendMsg({ type: 'copyPassword' }));
     document.getElementById('copyCode')?.addEventListener('click', () => sendMsg({ type: 'copyCode' }));
     document.getElementById('regenerateCode')?.addEventListener('click', () => sendMsg({ type: 'regenerateCode' }));
     document.getElementById('restartServer')?.addEventListener('click', () => sendMsg({ type: 'restartServer' }));

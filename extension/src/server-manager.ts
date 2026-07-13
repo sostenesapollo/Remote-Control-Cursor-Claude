@@ -181,7 +181,10 @@ export class ServerManager extends EventEmitter {
       cwd: this.context.extensionPath,
       env: { ...process.env, ...env },
       stdio: ['ignore', 'pipe', 'pipe'],
+      // Survive extension-host / window reload so the phone tunnel stays up.
+      detached: true,
     });
+    this.child.unref();
 
     this._isOwner = true;
 
@@ -214,6 +217,21 @@ export class ServerManager extends EventEmitter {
       if (portTaken) {
         this.outputChannel.info(`[${this.windowName}] Port already in use — falling back to observer.`);
         this.fallbackToObserver();
+        return;
+      }
+
+      // Unexpected exit (crash / SIGTERM from OS): restart unless user stopped manually.
+      if (!this.isManualStopped() && !this._reactingToFlag) {
+        this.outputChannel.warn(`[${this.windowName}] Unexpected exit — restarting in 1s.`);
+        this.setState('disconnected');
+        setTimeout(() => {
+          if (this.isManualStopped() || this.child) return;
+          this.start().catch(err => {
+            this.outputChannel.error(`[${this.windowName}] Auto-restart failed: ${err}`);
+            this.setState('error');
+          });
+        }, 1000);
+        this.emit('stopped');
         return;
       }
 
@@ -411,8 +429,9 @@ export class ServerManager extends EventEmitter {
       this.dirWatcher = null;
     }
     this.stopHealthPolling();
-    if (this.child) {
-      try { this.child.kill('SIGTERM'); } catch { /* ignore */ }
-    }
+    // Do not kill the relay on window/extension dispose — phone access + Cloudflare
+    // Tunnel need the process to stay up. Use CursorRemote: Stop Server to stop manually.
+    this.child = null;
+    this._isOwner = false;
   }
 }

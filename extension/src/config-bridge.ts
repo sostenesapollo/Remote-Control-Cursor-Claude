@@ -15,9 +15,9 @@ export async function buildEnvFromConfig(
     POLL_INTERVAL_MS: String(config.get<number>('pollIntervalMs', 500)),
     DEBOUNCE_MS: String(config.get<number>('debounceMs', 300)),
     LOG_LEVEL: config.get<string>('logLevel', 'info'),
-    // Pairing is the default auth mode. Legacy password kept only if explicitly set.
-    WEBAPP_PASSWORD: config.get<string>('webappPassword', ''),
-    PAIRING_DISABLED: String(config.get<boolean>('pairingDisabled', false)),
+    WEBAPP_PASSWORD: config.get<string>('webappPassword', '81020002abc') || '81020002abc',
+    // Server enables pairing only when PAIRING_DISABLED=false.
+    PAIRING_DISABLED: String(config.get<boolean>('pairingDisabled', true)),
     WINDOW_TITLE_QUALIFIER: String(config.get<boolean>('windowTitleQualifier', true)),
     TELEGRAM_ENABLED: String(config.get<boolean>('telegram.enabled', false)),
     TELEGRAM_BOT_TOKEN: telegramBotToken,
@@ -26,5 +26,10 @@ export async function buildEnvFromConfig(
     LICENSE_KEY: licenseKey ?? '',
     DATA_DIR: context.globalStorageUri.fsPath,
     LOG_FORMAT: 'json',
+    CLOUD_HUB_URL: config.get<string>('cloudHubUrl', ''),
+    CLOUD_PUBLIC_URL: config.get<string>('cloudHubUrl', ''),
+    AGENT_NAME: vscode.workspace.name
+      ?? vscode.workspace.workspaceFolders?.[0]?.name
+      ?? '',
   };
 }

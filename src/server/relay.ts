@@ -34,7 +34,7 @@ const LOGIN_PAGE_HTML = `<!DOCTYPE html>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <meta name="theme-color" content="#0d0d12">
-  <title>CursorRemote — Pair</title>
+  <title>CursorRemote — Login</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
@@ -62,14 +62,14 @@ const LOGIN_PAGE_HTML = `<!DOCTYPE html>
     h1 { font-size: 22px; font-weight: 700; margin-bottom: 6px; text-align: center; letter-spacing: -0.02em; }
     .subtitle { font-size: 14px; color: rgba(235,235,245,0.5); margin-bottom: 28px; text-align: center; line-height: 1.5; }
     .code-input {
-      width: 100%; padding: 14px 16px; font-size: 22px; font-weight: 600;
-      text-align: center; letter-spacing: 0.1em; text-transform: uppercase;
+      width: 100%; padding: 14px 16px; font-size: 18px; font-weight: 500;
+      text-align: center; letter-spacing: 0.04em;
       background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.12); border-radius: 12px;
-      color: rgba(235,235,245,0.95); outline: none; font-family: 'SF Mono', 'Fira Code', monospace;
+      color: rgba(235,235,245,0.95); outline: none;
       transition: border-color 0.2s, box-shadow 0.2s;
     }
     .code-input:focus { border-color: #6366f1; box-shadow: 0 0 0 3px rgba(99,102,241,0.18); }
-    .code-input::placeholder { color: rgba(235,235,245,0.25); letter-spacing: 0.1em; }
+    .code-input::placeholder { color: rgba(235,235,245,0.25); }
     button {
       width: 100%; padding: 14px; margin-top: 16px; font-size: 16px; font-weight: 600;
       background: linear-gradient(135deg, #6366f1, #8b5cf6); color: #fff; border: none; border-radius: 12px; cursor: pointer;
@@ -86,39 +86,34 @@ const LOGIN_PAGE_HTML = `<!DOCTYPE html>
   <form class="pair-card" id="form">
     <div class="logo">⚡</div>
     <h1>Connect</h1>
-    <p class="subtitle">Enter the pairing code from your CursorRemote setup</p>
-    <input type="text" class="code-input" id="code" placeholder="XXX-XXX" autocomplete="one-time-code" autofocus required>
-    <button type="submit" id="btn">Pair device</button>
+    <p class="subtitle">Enter the access password</p>
+    <input type="password" class="code-input" id="password" placeholder="Password" autocomplete="current-password" autofocus required>
+    <button type="submit" id="btn">Sign in</button>
     <p class="error" id="err"></p>
-    <p class="hint">Find the code in Cursor: Command Palette → CursorRemote: Setup</p>
+    <p class="hint">Same password configured in CursorRemote settings</p>
   </form>
   <script>
     const form = document.getElementById('form');
-    const codeInput = document.getElementById('code');
+    const passwordInput = document.getElementById('password');
     const btn = document.getElementById('btn');
     const err = document.getElementById('err');
-    codeInput.addEventListener('input', () => {
-      let v = codeInput.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
-      if (v.length > 3) v = v.slice(0,3) + '-' + v.slice(3,6);
-      codeInput.value = v;
-    });
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       btn.disabled = true;
       err.style.display = 'none';
       try {
-        const res = await fetch('/api/pair', {
+        const res = await fetch('/api/login', {
           method: 'POST',
           credentials: 'same-origin',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ code: codeInput.value }),
+          body: JSON.stringify({ password: passwordInput.value }),
         });
         const data = await res.json();
         if (res.ok && data.token) {
           localStorage.setItem('cursor-remote-token', data.token);
           window.location.href = '/app';
         } else {
-          err.textContent = data.error || 'Invalid code';
+          err.textContent = data.error || 'Invalid password';
           err.style.display = 'block';
         }
       } catch {
@@ -141,6 +136,7 @@ export class Relay {
   private cdpBridge: CDPBridge;
   private windowMonitor: WindowMonitor;
   private packageVersion: string;
+  private cloudTunnel: CloudTunnel | null;
 
   private sessionStore: WebappSessionStore;
   private pairCodeStore: PairCodeStore;
@@ -164,13 +160,15 @@ export class Relay {
     stateManager: StateManager,
     commandExecutor: CommandExecutor,
     cdpBridge: CDPBridge,
-    windowMonitor: WindowMonitor
+    windowMonitor: WindowMonitor,
+    cloudTunnel: CloudTunnel | null = null
   ) {
     this.config = config;
     this.stateManager = stateManager;
     this.commandExecutor = commandExecutor;
     this.cdpBridge = cdpBridge;
     this.windowMonitor = windowMonitor;
+    this.cloudTunnel = cloudTunnel;
     this.sessionStore = createWebappSessionStore(config.dataDir);
     this.pairCodeStore = createPairCodeStore(config.dataDir);
     this.packageVersion = this.readPackageVersion();
@@ -296,8 +294,6 @@ export class Relay {
       if (!this.config.pairingEnabled) {
         return res.status(403).json({ error: 'Pairing disabled' });
       }
-      // Optional shared secret to restrict who can mint codes. Defaults to none
-      // (extension is trusted since it spawns the server locally).
       const expectedSecret = process.env.PAIR_CODE_SECRET ?? '';
       if (expectedSecret) {
         const provided = req.headers['x-pair-secret'];
@@ -305,9 +301,35 @@ export class Relay {
           return res.status(401).json({ error: 'Unauthorized' });
         }
       }
+
+      const wantLocal = req.body?.local === true || req.query?.local === '1';
+      const cloud = this.cloudTunnel?.getStatus();
+      if (!wantLocal && cloud?.connected && cloud.pairCode) {
+        console.log('[relay] Returning cloud hub pairing code');
+        return res.json({
+          code: cloud.pairCode,
+          expiresInMs: null,
+          cloudHubUrl: cloud.hubUrl,
+          agentId: cloud.agentId,
+          mode: 'cloud',
+        });
+      }
+
       const code = this.pairCodeStore.generate();
-      console.log('[relay] Generated pairing code');
-      res.json({ code, expiresInMs: null });
+      console.log('[relay] Generated local pairing code');
+      res.json({ code, expiresInMs: null, mode: 'local' });
+    });
+
+    this.app.get('/api/cloud/status', (_req, res) => {
+      const cloud = this.cloudTunnel?.getStatus();
+      res.json({
+        enabled: !!this.config.cloudHubUrl,
+        hubUrl: cloud?.hubUrl || this.config.cloudHubUrl || null,
+        connected: cloud?.connected ?? false,
+        agentId: cloud?.agentId ?? '',
+        pairCode: cloud?.pairCode ?? '',
+        error: cloud?.error ?? null,
+      });
     });
 
     // --- Pairing: redeem a code (web/mobile client calls this) ---

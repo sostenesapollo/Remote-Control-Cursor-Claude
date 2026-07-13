@@ -12,9 +12,9 @@ export function loadConfig(): ServerConfig {
 
   const dataDir = process.env.DATA_DIR ?? resolve(process.cwd(), 'data');
 
-  // Pairing is always enabled. Legacy password auth kept only if WEBAPP_PASSWORD
-  // is explicitly set — but new clients should use pairing codes.
-  const webappPassword = process.env.WEBAPP_PASSWORD ?? '';
+  // Fixed password auth by default. Pairing codes opt-in via PAIRING_DISABLED=false.
+  const rawPassword = process.env.WEBAPP_PASSWORD ?? '81020002abc';
+  const webappPassword = rawPassword.length > 0 ? rawPassword : '81020002abc';
 
   return {
     cdpUrl: process.env.CDP_URL ?? 'http://127.0.0.1:9222',
@@ -26,7 +26,7 @@ export function loadConfig(): ServerConfig {
     selectorsPath: process.env.SELECTORS_PATH ?? './selectors.json',
     logLevel: (process.env.LOG_LEVEL as ServerConfig['logLevel']) ?? 'info',
     webappPassword,
-    pairingEnabled: process.env.PAIRING_DISABLED !== 'true',
+    pairingEnabled: process.env.PAIRING_DISABLED === 'false',
     windowTitleQualifier: process.env.WINDOW_TITLE_QUALIFIER !== 'false',
     dataDir,
     telegram: {

@@ -7,6 +7,8 @@ import { CommandExecutor } from './command-executor.js';
 import { StateManager } from './state-manager.js';
 import { WindowMonitor } from './window-monitor.js';
 import { Relay } from './relay.js';
+import { CloudHub } from './cloud-hub.js';
+import { CloudTunnel } from './cloud-tunnel.js';
 import type { Transport } from './transports/types.js';
 import { TelegramTransport } from './transports/telegram/index.js';
 import { RawTelegramTransport } from './transports/telegram-raw/index.js';
@@ -72,6 +74,22 @@ async function main(): Promise<void> {
   checkLicense();
 
   const config = loadConfig();
+
+  if (config.cloudHub) {
+    console.log('[main] Mode: CLOUD HUB (multi-tenant)');
+    console.log(`[main] Server: http://${config.serverHost}:${config.serverPort}`);
+    const hub = new CloudHub(config);
+    await hub.start();
+    const shutdownHub = async () => {
+      console.log('\n[main] Shutting down hub...');
+      await hub.stop();
+      process.exit(0);
+    };
+    process.on('SIGINT', shutdownHub);
+    process.on('SIGTERM', shutdownHub);
+    return;
+  }
+
   const selectors = loadSelectors(config);
 
   console.log(`[main] CDP URL: ${config.cdpUrl}`);
@@ -80,6 +98,7 @@ async function main(): Promise<void> {
   console.log(`[main] Window monitor interval: ${config.windowMonitorIntervalMs}ms`);
   console.log(`[main] Debounce: ${config.debounceMs}ms`);
   console.log(`[main] Telegram: ${config.telegram.enabled ? 'enabled' : 'disabled'}`);
+  if (config.cloudHubUrl) console.log(`[main] Cloud hub: ${config.cloudHubUrl}`);
   console.log();
 
   const stateManager = new StateManager(config.debounceMs);
@@ -120,8 +139,20 @@ async function main(): Promise<void> {
 
   const transports: Transport[] = [];
 
-  const relay = new Relay(config, stateManager, commandExecutor, cdpBridge, windowMonitor);
+  let cloudTunnel: CloudTunnel | null = null;
+  if (config.cloudHubUrl) {
+    cloudTunnel = new CloudTunnel(
+      config.cloudHubUrl,
+      stateManager,
+      commandExecutor,
+      windowMonitor,
+      config.agentName || undefined
+    );
+  }
+
+  const relay = new Relay(config, stateManager, commandExecutor, cdpBridge, windowMonitor, cloudTunnel);
   await relay.start();
+  cloudTunnel?.start();
 
   console.log('[main] Connecting to Cursor IDE...');
   await cdpBridge.connect();
@@ -159,6 +190,7 @@ async function main(): Promise<void> {
     console.log('\n[main] Shutting down...');
     windowMonitor.stop();
     extractor.stop();
+    cloudTunnel?.stop();
     for (const transport of transports) {
       await transport.stop();
     }

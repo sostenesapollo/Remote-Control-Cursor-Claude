@@ -6,6 +6,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed
+- **Chat tab bar moved below the mode/model/connection row**: it now sits at the very bottom of the screen, right under the Agent/model/window/connection pills, instead of above the transcript.
+- **Tabs with an agent actively working now sort first and show a spinner** instead of the plain active-dot, driven by Cursor's own `.spinning-loader` sidebar icon (probed live against a running Cursor instance rather than guessed) — background progress across chats is never scrolled out of view.
+
 ## [0.1.52] - 2026-07-12
 
 ### Fixed

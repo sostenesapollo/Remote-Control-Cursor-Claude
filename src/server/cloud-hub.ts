@@ -374,6 +374,7 @@ export class CloudHub {
         pendingApprovals: [],
         inputAvailable: false,
         chatTabs: [],
+        activeComposerId: '',
         mode: { current: 'agent', available: [] },
         model: { current: 'Auto', currentId: '' },
         windows: [],

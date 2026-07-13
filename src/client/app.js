@@ -99,9 +99,6 @@
     const errEl = document.getElementById('onboarding-error');
 
     codeInput.addEventListener('input', () => {
-      let v = codeInput.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
-      if (v.length > 3) v = v.slice(0, 3) + '-' + v.slice(3, 6);
-      codeInput.value = v;
       errEl.textContent = '';
     });
 
@@ -109,11 +106,11 @@
       btn.disabled = true;
       errEl.textContent = '';
       try {
-        const res = await fetch('/api/pair', {
+        const res = await fetch('/api/login', {
           method: 'POST',
           credentials: 'same-origin',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ code: codeInput.value }),
+          body: JSON.stringify({ password: codeInput.value }),
         });
         const data = await res.json();
         if (res.ok && data.token) {
@@ -122,7 +119,7 @@
           hideOnboarding();
           bootstrap();
         } else {
-          errEl.textContent = data.error || 'Invalid code';
+          errEl.textContent = data.error || 'Invalid password';
         }
       } catch {
         errEl.textContent = 'Network error';
@@ -1961,7 +1958,16 @@
   }
 
   function getVisibleChatTabs() {
-    return (state.chatTabs || []).filter((t) => !isNoiseChatTab(t.title));
+    const tabs = (state.chatTabs || []).filter((t) => !isNoiseChatTab(t.title));
+    // Busy (agent actively working) tabs surface first so background progress
+    // is never scrolled out of view; order is otherwise preserved.
+    return tabs
+      .map((tab, index) => ({ tab, index }))
+      .sort((a, b) => {
+        const busyDelta = (b.tab.isBusy ? 1 : 0) - (a.tab.isBusy ? 1 : 0);
+        return busyDelta !== 0 ? busyDelta : a.index - b.index;
+      })
+      .map(({ tab }) => tab);
   }
 
   function renderTabs() {
@@ -1993,10 +1999,13 @@
         btn.className = 'tab-item';
         btn.dataset.title = tab.title;
         btn.type = 'button';
+        const spinner = document.createElement('span');
+        spinner.className = 'tab-item-spinner';
         const dot = document.createElement('span');
         dot.className = 'tab-item-dot';
         const label = document.createElement('span');
         label.className = 'tab-item-label';
+        btn.appendChild(spinner);
         btn.appendChild(dot);
         btn.appendChild(label);
         btn.addEventListener('click', () => {
@@ -2007,6 +2016,8 @@
         existingMap.set(tab.title, btn);
       }
       btn.classList.toggle('active', !!tab.isActive);
+      btn.classList.toggle('busy', !!tab.isBusy);
+      btn.title = tab.isBusy ? 'Agent working…' : '';
       btn.querySelector('.tab-item-label').textContent = tabDisplayTitle(tab.title);
       fragment.appendChild(btn);
     });

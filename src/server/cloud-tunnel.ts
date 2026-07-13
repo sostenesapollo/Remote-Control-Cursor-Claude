@@ -151,8 +151,8 @@ export class CloudTunnel {
         case 'command:new_chat':
           return await this.commandExecutor.newChat(id);
         case 'command:set_mode':
-          if (!payload.mode) return { commandId: id, ok: false, error: 'Missing mode' };
-          return await this.commandExecutor.setMode(id, payload.mode);
+          if (!payload.modeId) return { commandId: id, ok: false, error: 'Missing modeId' };
+          return await this.commandExecutor.setMode(id, payload.modeId);
         case 'command:set_model':
           if (!payload.modelId) return { commandId: id, ok: false, error: 'Missing modelId' };
           return await this.commandExecutor.setModel(id, payload.modelId);

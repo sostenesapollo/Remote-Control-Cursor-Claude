@@ -109,6 +109,9 @@ export interface ChatTab {
   title: string;
   isActive: boolean;
   status: string;
+  /** True when the agent is actively working on this tab in the background
+   *  (Cursor renders a spinning-loader icon on the sidebar cell for it). */
+  isBusy: boolean;
   selectorPath: string;
 }
 
