@@ -23,10 +23,20 @@ function grammyApiAdapter(bot: Bot): TelegramApiClient {
       bot.api.deleteMessage(chatId, msgId),
     sendChatAction: (chatId, action, opts) =>
       bot.api.sendChatAction(chatId, action as 'typing', opts).then(() => {}),
-    createForumTopic: (chatId, name) =>
-      bot.api.createForumTopic(chatId, name),
-    editForumTopic: (chatId, threadId, name) =>
-      bot.api.editForumTopic(chatId, threadId, { name }).then(() => {}),
+    createForumTopic: (chatId, name, options) => {
+      const opts: { icon_color?: number; icon_custom_emoji_id?: string } = {};
+      if (options?.iconColor != null) opts.icon_color = options.iconColor;
+      if (options?.iconCustomEmojiId) opts.icon_custom_emoji_id = options.iconCustomEmojiId;
+      return bot.api.createForumTopic(chatId, name, opts);
+    },
+    editForumTopic: (chatId, threadId, options) => {
+      const opts: { name?: string; icon_custom_emoji_id?: string } = {};
+      if (options.name != null) opts.name = options.name;
+      if (options.iconCustomEmojiId != null) {
+        opts.icon_custom_emoji_id = options.iconCustomEmojiId;
+      }
+      return bot.api.editForumTopic(chatId, threadId, opts).then(() => {});
+    },
     deleteForumTopic: (chatId, threadId) =>
       bot.api.deleteForumTopic(chatId, threadId).then(() => {}),
     setMyCommands: (commands) =>

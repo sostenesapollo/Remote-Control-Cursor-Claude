@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync, existsSync } from 'fs';
 import type { CursorWindow, ChatTab } from '../../types.js';
 import { cleanTabTitle } from '../../dom-extractor.js';
 import type { TelegramApiClient } from './tg-types.js';
+import { topicIconForPhase } from './topic-icons.js';
 
 export interface TopicMapping {
   threadId: number;
@@ -183,7 +184,11 @@ export class TopicManager {
 
         const topicName = `${win.title} — ${cleaned}`.substring(0, 128);
         try {
-          const result = await api.createForumTopic(chatId, topicName);
+          const icon = topicIconForPhase('new');
+          const result = await api.createForumTopic(chatId, topicName, {
+            iconColor: icon.iconColor,
+            iconCustomEmojiId: icon.iconCustomEmojiId,
+          });
           const mapping: TopicMapping = {
             threadId: result.message_thread_id,
             windowId: win.id,

@@ -23,6 +23,8 @@ import {
 import { AGENT_ACTIVITY_STALE_MS } from '../../activity-stale.js';
 import type { TelegramApiClient, BotContext } from './tg-types.js';
 import type { CommandDeps, RegisterDeps } from './commands.js';
+import { topicIconForPhase, topicIconForSnapshot } from './topic-icons.js';
+import type { TopicIconPhase } from './topic-icons.js';
 import {
   handleSync,
   handleSyncAll,
@@ -129,6 +131,8 @@ export abstract class BaseTelegramTransport implements Transport {
   private activityTimestamps = new Map<number, number>();
   private queueMsgIds = new Map<number, number>();
   private lastQueueSig = new Map<number, string>();
+  /** Last applied topic icon phase per thread — skip redundant editForumTopic calls. */
+  private topicIconPhaseByThread = new Map<number, TopicIconPhase>();
   protected authState: AuthState;
   protected registeredUsers: Set<number>;
 
@@ -686,6 +690,8 @@ export abstract class BaseTelegramTransport implements Transport {
       this.topicManager.persistInPlace();
     }
 
+    await this.syncTopicIcon(threadId, snapshot);
+
     const messages = snapshot.messages;
 
     const activityText = snapshot.agentActivityLive ? snapshot.agentActivityText : null;
@@ -904,6 +910,33 @@ export abstract class BaseTelegramTransport implements Transport {
     }
   }
 
+  private async syncTopicIcon(threadId: number, snapshot: WindowSnapshot): Promise<void> {
+    if (!this.chatId) return;
+
+    const style = topicIconForSnapshot(
+      snapshot.agentStatus,
+      snapshot.pendingApprovals.length
+    );
+    if (this.topicIconPhaseByThread.get(threadId) === style.phase) return;
+
+    try {
+      await this.sendQueue.enqueue(
+        () => this.api.editForumTopic(this.chatId!, threadId, {
+          iconCustomEmojiId: style.iconCustomEmojiId,
+        }),
+        'edit'
+      );
+      this.topicIconPhaseByThread.set(threadId, style.phase);
+      console.log(`[telegram] Topic ${threadId} icon → ${style.phase}`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // Topic may have been deleted, or Manage Topics revoked — don't spam.
+      if (!msg.includes('TOPIC_ID_INVALID') && !msg.includes('not enough rights')) {
+        console.warn(`[telegram] Topic icon update failed (${threadId}): ${msg}`);
+      }
+    }
+  }
+
   private findMappingByTabTitle(tabTitle: string): import('./topic-manager.js').TopicMapping | undefined {
     const tabLower = cleanTabTitle(tabTitle).toLowerCase();
     for (const m of this.topicManager.getAllMappings()) {
@@ -922,7 +955,11 @@ export abstract class BaseTelegramTransport implements Transport {
     const topicName = `${windowTitle} — ${tabTitle}`.substring(0, 128);
     try {
       await sleep(TOPIC_CREATE_DELAY_MS);
-      const result = await this.api.createForumTopic(this.chatId, topicName);
+      const icon = topicIconForPhase('new');
+      const result = await this.api.createForumTopic(this.chatId, topicName, {
+        iconColor: icon.iconColor,
+        iconCustomEmojiId: icon.iconCustomEmojiId,
+      });
       this.topicManager.registerMapping({
         threadId: result.message_thread_id,
         windowId,
@@ -931,6 +968,7 @@ export abstract class BaseTelegramTransport implements Transport {
         lastActive: Date.now(),
         ...(composerId ? { composerId } : {}),
       });
+      this.topicIconPhaseByThread.set(result.message_thread_id, 'new');
       return result.message_thread_id;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

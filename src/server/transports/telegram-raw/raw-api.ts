@@ -66,19 +66,31 @@ export class RawTelegramApiClient implements TelegramApiClient {
     await this.call('sendChatAction', body);
   }
 
-  async createForumTopic(chatId: number, name: string): Promise<{ message_thread_id: number }> {
-    return this.call<{ message_thread_id: number }>('createForumTopic', {
-      chat_id: chatId,
-      name,
-    });
+  async createForumTopic(
+    chatId: number,
+    name: string,
+    options?: { iconColor?: number; iconCustomEmojiId?: string }
+  ): Promise<{ message_thread_id: number }> {
+    const body: Record<string, unknown> = { chat_id: chatId, name };
+    if (options?.iconColor != null) body.icon_color = options.iconColor;
+    if (options?.iconCustomEmojiId) body.icon_custom_emoji_id = options.iconCustomEmojiId;
+    return this.call<{ message_thread_id: number }>('createForumTopic', body);
   }
 
-  async editForumTopic(chatId: number, threadId: number, name: string): Promise<void> {
-    await this.call('editForumTopic', {
+  async editForumTopic(
+    chatId: number,
+    threadId: number,
+    options: { name?: string; iconColor?: number; iconCustomEmojiId?: string }
+  ): Promise<void> {
+    const body: Record<string, unknown> = {
       chat_id: chatId,
       message_thread_id: threadId,
-      name,
-    });
+    };
+    if (options.name != null) body.name = options.name;
+    if (options.iconCustomEmojiId != null) {
+      body.icon_custom_emoji_id = options.iconCustomEmojiId;
+    }
+    await this.call('editForumTopic', body);
   }
 
   async deleteForumTopic(chatId: number, threadId: number): Promise<void> {

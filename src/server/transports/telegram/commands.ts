@@ -9,6 +9,7 @@ import type { PlanBlock } from '../../types.js';
 import { cleanTabTitle } from '../../dom-extractor.js';
 import { normalizeWindowTitle } from './topic-manager.js';
 import { tgKeyboard, type BotContext, type TelegramApiClient } from './tg-types.js';
+import { topicIconForPhase, topicIconForSnapshot } from './topic-icons.js';
 
 export interface CommandDeps {
   api: TelegramApiClient;
@@ -252,7 +253,19 @@ async function doSyncInBackground(
     const topicName = `${snapshot.windowTitle} — ${cleanedTab}`.substring(0, 128);
     try {
       await sleep(500);
-      const result = await api.createForumTopic(chatId, topicName);
+      const icon = topicIconForSnapshot(
+        snapshot.agentStatus,
+        snapshot.pendingApprovals?.length ?? 0
+      );
+      // Brand-new topics get the "new" star; ongoing sync of an already-busy
+      // agent uses the live status icon instead.
+      const createIcon = snapshot.agentStatus === 'idle' && !(snapshot.pendingApprovals?.length)
+        ? topicIconForPhase('new')
+        : icon;
+      const result = await api.createForumTopic(chatId, topicName, {
+        iconColor: createIcon.iconColor,
+        iconCustomEmojiId: createIcon.iconCustomEmojiId,
+      });
       const threadId = result.message_thread_id;
       topicManager.registerMapping({
         threadId,
@@ -495,7 +508,7 @@ export async function handleResync(ctx: BotContext, deps: CommandDeps): Promise<
   // the topic name just stays stale until the user fixes permissions.
   let renamed = true;
   try {
-    await deps.api.editForumTopic(chatId, threadId, newLabel.substring(0, 128));
+    await deps.api.editForumTopic(chatId, threadId, { name: newLabel.substring(0, 128) });
   } catch (err) {
     renamed = false;
     const msg = err instanceof Error ? err.message : String(err);

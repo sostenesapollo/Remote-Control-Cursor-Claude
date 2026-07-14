@@ -51,6 +51,14 @@ export interface BotContext {
   answerCallbackQuery(options?: { text?: string }): Promise<void>;
 }
 
+/** Options for createForumTopic / editForumTopic icon styling. */
+export interface ForumTopicOptions {
+  /** RGB color — only applied on create (Telegram ignores it on edit). */
+  iconColor?: number;
+  /** Custom emoji from getForumTopicIconStickers — works on create and edit. */
+  iconCustomEmojiId?: string;
+}
+
 export interface TelegramApiClient {
   sendMessage(chatId: number, text: string, options?: {
     message_thread_id?: number;
@@ -65,8 +73,16 @@ export interface TelegramApiClient {
   sendChatAction(chatId: number, action: string, options?: {
     message_thread_id?: number;
   }): Promise<void>;
-  createForumTopic(chatId: number, name: string): Promise<{ message_thread_id: number }>;
-  editForumTopic(chatId: number, threadId: number, name: string): Promise<void>;
+  createForumTopic(
+    chatId: number,
+    name: string,
+    options?: ForumTopicOptions
+  ): Promise<{ message_thread_id: number }>;
+  editForumTopic(
+    chatId: number,
+    threadId: number,
+    options: { name?: string } & ForumTopicOptions
+  ): Promise<void>;
   deleteForumTopic(chatId: number, threadId: number): Promise<void>;
   setMyCommands(commands: Array<{ command: string; description: string }>): Promise<void>;
   getMe(): Promise<{ id: number; username?: string; is_bot: boolean; first_name: string }>;
