@@ -12,6 +12,7 @@ import { cleanTabTitle } from '../../dom-extractor.js';
 import { normalizeWindowTitle } from './topic-manager.js';
 import { tgKeyboard, type BotContext, type TelegramApiClient } from './tg-types.js';
 import { topicIconForPhase, topicIconForSnapshot } from './topic-icons.js';
+import { formatCursorForumTopicName } from './topic-names.js';
 
 export interface CommandDeps {
   api: TelegramApiClient;
@@ -263,7 +264,7 @@ async function doSyncInBackground(
 
   for (const { snapshot, tabTitle } of toCreate) {
     const cleanedTab = cleanTabTitle(tabTitle);
-    const topicName = `${snapshot.windowTitle} — ${cleanedTab}`.substring(0, 128);
+    const topicName = formatCursorForumTopicName(snapshot.windowTitle, cleanedTab);
     try {
       await sleep(500);
       const icon = topicIconForSnapshot(
@@ -493,8 +494,8 @@ export async function handleResync(ctx: BotContext, deps: CommandDeps): Promise<
   const activeTab = { title: targetTabTitle };
 
   const cleanedTab = cleanTabTitle(activeTab.title);
-  const oldLabel = `${mapping.windowTitle} — ${mapping.tabTitle}`;
-  const newLabel = `${activeWin.title} — ${cleanedTab}`;
+  const oldLabel = formatCursorForumTopicName(mapping.windowTitle, mapping.tabTitle);
+  const newLabel = formatCursorForumTopicName(activeWin.title, cleanedTab);
 
   if (
     mapping.windowId === activeWin.id &&
@@ -527,7 +528,7 @@ export async function handleResync(ctx: BotContext, deps: CommandDeps): Promise<
   // the topic name just stays stale until the user fixes permissions.
   let renamed = true;
   try {
-    await deps.api.editForumTopic(chatId, threadId, { name: newLabel.substring(0, 128) });
+    await deps.api.editForumTopic(chatId, threadId, { name: newLabel });
   } catch (err) {
     renamed = false;
     const msg = err instanceof Error ? err.message : String(err);

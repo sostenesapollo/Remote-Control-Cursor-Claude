@@ -3,6 +3,7 @@ import type { CursorWindow, ChatTab } from '../../types.js';
 import { cleanTabTitle } from '../../dom-extractor.js';
 import type { TelegramApiClient } from './tg-types.js';
 import { topicIconForPhase } from './topic-icons.js';
+import { formatCursorForumTopicName } from './topic-names.js';
 
 export interface TopicMapping {
   threadId: number;
@@ -182,7 +183,7 @@ export class TopicManager {
           continue;
         }
 
-        const topicName = `${win.title} — ${cleaned}`.substring(0, 128);
+        const topicName = formatCursorForumTopicName(win.title, cleaned);
         try {
           const icon = topicIconForPhase('new');
           const result = await api.createForumTopic(chatId, topicName, {

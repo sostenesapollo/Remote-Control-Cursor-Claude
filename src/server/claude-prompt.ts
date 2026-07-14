@@ -106,9 +106,12 @@ export interface PromptRunResult {
 }
 
 /**
- * Send a prompt into a Claude Code session by resuming its transcript with -p.
- * Parallel non-interactive turn with the same conversation history.
- * (Desktop UI has no documented inject API.)
+ * Send a prompt as a Claude Code print turn in the project cwd.
+ *
+ * Uses `-c` (continue latest in directory) instead of `--resume <id>` so we
+ * don't steal/kill an interactive Claude Desktop session on the same id.
+ * Auth: borrow CLAUDE_CODE_OAUTH_TOKEN from a live Desktop process when the
+ * LaunchAgent CLI has no login (never logged).
  */
 export function runClaudePrintPrompt(opts: {
   sessionId: string;
@@ -127,9 +130,12 @@ export function runClaudePrintPrompt(opts: {
   }
 
   const timeoutMs = opts.timeoutMs ?? 600_000;
+  // Prefer continue-in-cwd. Explicit --resume fights Claude Desktop when the
+  // same session is open interactively (Desktop ends; Telegram often never
+  // gets the reply because the relay restarts or the child hangs).
   const args = [
     '-p',
-    '--resume', opts.sessionId,
+    '-c',
     '--permission-mode', 'bypassPermissions',
     '--output-format', 'text',
     opts.prompt,
@@ -138,6 +144,9 @@ export function runClaudePrintPrompt(opts: {
   const env = { ...process.env };
   const oauth = resolveClaudeOauthToken();
   if (oauth) env.CLAUDE_CODE_OAUTH_TOKEN = oauth;
+  console.log(
+    `[claude-prompt] spawn -c cwd=${opts.cwd} oauth=${oauth ? 'yes' : 'no'} session=${opts.sessionId.slice(0, 8)}`
+  );
 
   return new Promise((resolve) => {
     const child = spawn(binary, args, {
@@ -166,6 +175,7 @@ export function runClaudePrintPrompt(opts: {
     child.on('close', (code) => {
       clearTimeout(timer);
       const text = stdout.trim();
+      console.log(`[claude-prompt] exit=${code} outLen=${text.length} errLen=${stderr.length}`);
       if (code === 0 && text) {
         resolve({ ok: true, text });
         return;
@@ -177,7 +187,7 @@ export function runClaudePrintPrompt(opts: {
       resolve({
         ok: false,
         text,
-        error: (errLine || `claude exited with code ${code ?? '?'}`) + loginHint,
+        error: (errLine || text || `claude exited with code ${code ?? '?'}`) + loginHint,
       });
     });
   });

@@ -24,6 +24,7 @@ const CURSOR_REMOTE_MARKER = 'cursor-remote-claude-bridge';
 const EVENTS = [
   'SessionStart',
   'SessionEnd',
+  'UserPromptSubmit',
   'Notification',
   'PermissionRequest',
   'PreToolUse',

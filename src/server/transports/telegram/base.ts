@@ -25,6 +25,7 @@ import type { TelegramApiClient, BotContext } from './tg-types.js';
 import type { CommandDeps, RegisterDeps } from './commands.js';
 import { topicIconForPhase, topicIconForSnapshot } from './topic-icons.js';
 import type { TopicIconPhase } from './topic-icons.js';
+import { formatCursorForumTopicName, formatForumTopicNameForMapping } from './topic-names.js';
 import type { ClaudeBridge, ClaudeTelegramSink } from '../../claude-bridge.js';
 import {
   handleSync,
@@ -134,6 +135,8 @@ export abstract class BaseTelegramTransport implements Transport {
   private lastQueueSig = new Map<number, string>();
   /** Last applied topic icon phase per thread — skip redundant editForumTopic calls. */
   private topicIconPhaseByThread = new Map<number, TopicIconPhase>();
+  /** Threads whose Telegram display name already has the Cursor/Claude emoji prefix. */
+  private topicNameEnsured = new Set<number>();
   private claudeBridge: ClaudeBridge | null = null;
   protected authState: AuthState;
   protected registeredUsers: Set<number>;
@@ -299,6 +302,37 @@ export abstract class BaseTelegramTransport implements Transport {
     console.log(`[telegram] Bot connected (sync: ${this.syncEnabled ? 'on' : 'off'})`);
     this.started = true;
     this.cleanupPersistedActivity();
+    if (this.syncEnabled && this.groupId) {
+      void this.renameAllTopicNamesOnce();
+    }
+  }
+
+  /** Best-effort: prefix existing forum topics with 🖱️ / 🤖 for scannability. */
+  private async renameAllTopicNamesOnce(): Promise<void> {
+    if (!this.chatId) return;
+    const mappings = this.topicManager.getAllMappings();
+    for (const m of mappings) {
+      if (this.topicNameEnsured.has(m.threadId)) continue;
+      const name = formatForumTopicNameForMapping(m);
+      try {
+        await this.sendQueue.enqueue(
+          () => this.api.editForumTopic(this.chatId!, m.threadId, { name }),
+          'edit'
+        );
+        this.topicNameEnsured.add(m.threadId);
+        console.log(`[telegram] Topic ${m.threadId} renamed → ${name}`);
+        await sleep(1200);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg.includes('TOPIC_NOT_MODIFIED')) {
+          this.topicNameEnsured.add(m.threadId);
+          continue;
+        }
+        if (!msg.includes('TOPIC_ID_INVALID') && !msg.includes('not enough rights')) {
+          console.warn(`[telegram] Rename topic ${m.threadId} failed: ${msg}`);
+        }
+      }
+    }
   }
 
   protected onStop(): void {
@@ -940,25 +974,33 @@ export abstract class BaseTelegramTransport implements Transport {
       snapshot.agentStatus,
       snapshot.pendingApprovals.length
     );
-    if (this.topicIconPhaseByThread.get(threadId) === style.phase) return;
+    const mapping = this.topicManager.resolveThread(threadId);
+    const needName = mapping && !this.topicNameEnsured.has(threadId);
+    if (this.topicIconPhaseByThread.get(threadId) === style.phase && !needName) return;
 
     try {
+      const opts: { iconCustomEmojiId: string; iconColor: number; name?: string } = {
+        // Empty string clears any prior custom-emoji sticker so the colored
+        // circle from iconColor shows (Telegram forum topic dots).
+        iconCustomEmojiId: '',
+        iconColor: style.iconColor,
+      };
+      if (needName && mapping) {
+        opts.name = formatForumTopicNameForMapping(mapping);
+      }
       await this.sendQueue.enqueue(
-        () => this.api.editForumTopic(this.chatId!, threadId, {
-          // Empty string clears any prior custom-emoji sticker so the colored
-          // circle from iconColor shows (Telegram forum topic dots).
-          iconCustomEmojiId: '',
-          iconColor: style.iconColor,
-        }),
+        () => this.api.editForumTopic(this.chatId!, threadId, opts),
         'edit'
       );
       this.topicIconPhaseByThread.set(threadId, style.phase);
-      console.log(`[telegram] Topic ${threadId} icon → ${style.phase}`);
+      if (needName) this.topicNameEnsured.add(threadId);
+      console.log(`[telegram] Topic ${threadId} icon → ${style.phase}${needName ? ' (+name)' : ''}`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       // TOPIC_NOT_MODIFIED is fine (same color already applied).
       if (msg.includes('TOPIC_NOT_MODIFIED')) {
         this.topicIconPhaseByThread.set(threadId, style.phase);
+        if (needName) this.topicNameEnsured.add(threadId);
         return;
       }
       // Topic may have been deleted, or Manage Topics revoked — don't spam.
@@ -983,7 +1025,7 @@ export abstract class BaseTelegramTransport implements Transport {
     if (this.creatingTopic.has(key)) return undefined;
     this.creatingTopic.add(key);
 
-    const topicName = `${windowTitle} — ${tabTitle}`.substring(0, 128);
+    const topicName = formatCursorForumTopicName(windowTitle, tabTitle);
     try {
       await sleep(TOPIC_CREATE_DELAY_MS);
       const icon = topicIconForPhase('new');
@@ -999,6 +1041,7 @@ export abstract class BaseTelegramTransport implements Transport {
         ...(composerId ? { composerId } : {}),
       });
       this.topicIconPhaseByThread.set(result.message_thread_id, 'new');
+      this.topicNameEnsured.add(result.message_thread_id);
       return result.message_thread_id;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

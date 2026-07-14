@@ -31,6 +31,9 @@ describe('installClaudeHooks', () => {
     assert.ok(out.hooks.Notification.some((e) =>
       e.hooks.some((h) => h.type === 'http' && h.url?.includes('/api/claude/hooks/Notification'))
     ));
+    assert.ok(out.hooks.UserPromptSubmit.some((e) =>
+      e.hooks.some((h) => h.type === 'http' && h.url?.includes('/api/claude/hooks/UserPromptSubmit'))
+    ));
 
     // idempotent
     assert.equal(installClaudeHooks('http://127.0.0.1:3000/api/claude/hooks', path), false);

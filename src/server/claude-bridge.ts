@@ -7,11 +7,16 @@ import { tgKeyboard } from './transports/telegram/tg-types.js';
 import type { TopicManager, TopicMapping } from './transports/telegram/topic-manager.js';
 import type { SendQueue } from './transports/send-queue.js';
 import { topicIconForPhase, type TopicIconPhase } from './transports/telegram/topic-icons.js';
+import { formatClaudeForumTopicName } from './transports/telegram/topic-names.js';
 import {
   lookupSessionFromDisk,
   resolveClaudeBinary,
   runClaudePrintPrompt,
 } from './claude-prompt.js';
+import {
+  extractLastRoleText,
+  resolveClaudeTranscriptPath,
+} from './claude-transcript.js';
 
 export interface ClaudeHookBody {
   session_id?: string;
@@ -70,8 +75,14 @@ function sessionLabel(body: ClaudeHookBody): string {
   return sid.length > 12 ? sid.slice(0, 12) : sid;
 }
 
-function windowIdForSession(sessionId: string): string {
-  return `${CLAUDE_WINDOW_PREFIX}${createHash('sha1').update(sessionId).digest('hex').slice(0, 16)}`;
+function windowIdForProject(body: ClaudeHookBody): string {
+  // Stable per project folder so session restarts reuse the same Telegram topic.
+  const key = (body.cwd?.trim() || body.session_id || 'unknown').toLowerCase();
+  return `${CLAUDE_WINDOW_PREFIX}${createHash('sha1').update(key).digest('hex').slice(0, 16)}`;
+}
+
+function isDeadTopicError(msg: string): boolean {
+  return /TOPIC_ID_INVALID|message thread not found|TOPIC_NOT_FOUND/i.test(msg);
 }
 
 function summarizeToolInput(input: unknown): string {
@@ -86,12 +97,14 @@ function summarizeToolInput(input: unknown): string {
 
 /**
  * Bridges Claude Code HTTP hooks into the same Telegram forum group used by Cursor.
- * Topics are named `Claude — <project>` and use the colored-circle icon palette.
+ * Topics are named `🤖 Claude — <project>` and use the colored-circle icon palette.
  */
 export class ClaudeBridge {
   private sink: ClaudeTelegramSink | null = null;
   private pending = new Map<string, PendingPermission>();
   private topicIconPhase = new Map<number, TopicIconPhase>();
+  /** Threads that already have 🤖 in the Telegram topic name. */
+  private topicNameEnsured = new Set<number>();
   private permissionTimeoutMs: number;
   /** sessionId → last known cwd / label from hooks */
   private sessions = new Map<string, { cwd: string; label: string; updatedAt: number }>();
@@ -161,9 +174,15 @@ export class ClaudeBridge {
       case 'Notification':
         await this.notifyUser(body);
         return {};
+      case 'UserPromptSubmit':
+        await this.notifyUserPrompt(body);
+        return {};
       case 'Stop':
-      case 'SubagentStop':
         await this.notifyStop(body);
+        return {};
+      case 'SubagentStop':
+        // Avoid double-posting with Stop — icon tick only.
+        await this.ensureClaudeTopic(body, 'idle');
         return {};
       case 'SessionStart':
         await this.ensureClaudeTopic(body, 'new');
@@ -219,9 +238,6 @@ export class ClaudeBridge {
     body: ClaudeHookBody,
     event: 'PermissionRequest' | 'PreToolUse'
   ): Promise<Record<string, unknown>> {
-    const threadId = await this.ensureClaudeTopic(body, 'waiting_approval');
-    if (threadId == null) return {};
-
     const id = shortId();
     const tool = escapeHtml(body.tool_name ?? 'tool');
     const input = escapeHtml(summarizeToolInput(body.tool_input));
@@ -236,7 +252,11 @@ export class ClaudeBridge {
       .text('❌ Deny', `cld:${id}`)
       .build();
 
-    const messageId = await this.sendHtml(threadId, html, keyboard);
+    const messageId = await this.deliverHtml(body, 'waiting_approval', html, keyboard);
+    const threadId =
+      this.sink?.getTopicManager()?.getAllMappings().find(
+        (m) => m.windowId === windowIdForProject(body)
+      )?.threadId ?? 0;
 
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
@@ -262,18 +282,17 @@ export class ClaudeBridge {
   }
 
   private async notifyToolActivity(body: ClaudeHookBody, phase: TopicIconPhase): Promise<void> {
-    const threadId = await this.ensureClaudeTopic(body, phase);
-    if (threadId == null) return;
-    const tool = escapeHtml(body.tool_name ?? 'tool');
-    const verb = phase === 'running_tool' ? 'Using' : 'Used';
-    await this.sendHtml(threadId, `⚙️ <b>${verb}</b> <code>${tool}</code>`);
+    // Only bump icon for tools — Cursor-style mirror is chat text, not every tool call.
+    await this.ensureClaudeTopic(body, phase);
   }
 
   private async notifyFailure(body: ClaudeHookBody): Promise<void> {
-    const threadId = await this.ensureClaudeTopic(body, 'error');
-    if (threadId == null) return;
     const tool = escapeHtml(body.tool_name ?? 'tool');
-    await this.sendHtml(threadId, `‼️ <b>Tool failed</b> <code>${tool}</code>`);
+    await this.deliverHtml(
+      body,
+      'error',
+      `‼️ <b>Tool failed</b> <code>${tool}</code>`
+    );
   }
 
   private async notifyUser(body: ClaudeHookBody): Promise<void> {
@@ -284,28 +303,95 @@ export class ClaudeBridge {
         : type === 'agent_completed'
           ? 'idle'
           : 'generating';
-    const threadId = await this.ensureClaudeTopic(body, phase);
-    if (threadId == null) return;
     const title = body.title ? `<b>${escapeHtml(body.title)}</b>\n` : '';
     const msg = escapeHtml(body.message ?? type ?? 'notification');
-    await this.sendHtml(threadId, `🔔 ${title}${msg}`);
+    await this.deliverHtml(body, phase, `🔔 ${title}${msg}`);
+  }
+
+  private async notifyUserPrompt(body: ClaudeHookBody): Promise<void> {
+    const path = resolveClaudeTranscriptPath(body);
+    const fromDisk = path ? extractLastRoleText(path, 'user') : null;
+    const prompt =
+      fromDisk ||
+      (typeof body.prompt === 'string' ? body.prompt : null) ||
+      (typeof body.message === 'string' ? body.message : null);
+    if (!prompt?.trim()) {
+      await this.ensureClaudeTopic(body, 'generating');
+      return;
+    }
+    await this.deliverHtml(
+      body,
+      'generating',
+      `<b>You:</b> ${escapeHtml(prompt.trim()).slice(0, 3500)}`
+    );
   }
 
   private async notifyStop(body: ClaudeHookBody): Promise<void> {
-    const threadId = await this.ensureClaudeTopic(body, 'idle');
-    if (threadId == null) return;
-    await this.sendHtml(threadId, `✅ <b>Claude finished a turn</b> · ${escapeHtml(sessionLabel(body))}`);
+    const path = resolveClaudeTranscriptPath(body);
+    const answer = path ? extractLastRoleText(path, 'assistant') : null;
+    if (answer?.trim()) {
+      await this.deliverHtml(
+        body,
+        'idle',
+        escapeHtml(answer.trim()).slice(0, 3800)
+      );
+      return;
+    }
+    await this.deliverHtml(
+      body,
+      'idle',
+      `✅ <b>Claude finished a turn</b> · ${escapeHtml(sessionLabel(body))}`
+    );
   }
 
   private async notifySessionEnd(body: ClaudeHookBody): Promise<void> {
-    const threadId = await this.ensureClaudeTopic(body, 'idle');
-    if (threadId == null) return;
-    await this.sendHtml(threadId, `⏹ <b>Claude session ended</b> · ${escapeHtml(sessionLabel(body))}`);
+    await this.deliverHtml(
+      body,
+      'idle',
+      `⏹ <b>Claude session ended</b> · ${escapeHtml(sessionLabel(body))}`
+    );
+  }
+
+  /** Send HTML into the Claude topic; recreate the topic once if Telegram says it's gone. */
+  private async deliverHtml(
+    body: ClaudeHookBody,
+    phase: TopicIconPhase,
+    html: string,
+    keyboard?: TgKeyboard
+  ): Promise<number | undefined> {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const threadId = await this.ensureClaudeTopic(body, phase, { forceNew: attempt > 0 });
+      if (threadId == null) return undefined;
+      const result = await this.sendHtml(threadId, html, keyboard);
+      if (result.messageId != null) return result.messageId;
+      if (!result.deadTopic) return undefined;
+      console.warn(`[claude-bridge] Topic ${threadId} dead — recreating`);
+    }
+    return undefined;
+  }
+
+  private dropStaleClaudeMappings(winId: string, windowTitle: string): void {
+    const topicManager = this.sink?.getTopicManager();
+    if (!topicManager) return;
+    for (const m of topicManager.getAllMappings()) {
+      const sameProject =
+        m.windowId === winId ||
+        m.windowTitle === windowTitle ||
+        (m.windowTitle.startsWith('Claude — ') && m.windowTitle === windowTitle);
+      if (!sameProject) continue;
+      if (!m.windowId.startsWith(CLAUDE_WINDOW_PREFIX) && !m.windowTitle.startsWith('Claude — ')) {
+        continue;
+      }
+      topicManager.removeMapping(m.threadId);
+      this.topicIconPhase.delete(m.threadId);
+      console.log(`[claude-bridge] Dropped stale mapping thread=${m.threadId} title=${m.windowTitle}`);
+    }
   }
 
   private async ensureClaudeTopic(
     body: ClaudeHookBody,
-    phase: TopicIconPhase
+    phase: TopicIconPhase,
+    opts?: { forceNew?: boolean }
   ): Promise<number | undefined> {
     const sink = this.sink;
     if (!sink?.isReady()) return undefined;
@@ -316,17 +402,38 @@ export class ClaudeBridge {
     if (!api || chatId == null || !topicManager || !queue) return undefined;
 
     const sessionId = body.session_id || 'unknown';
-    const winId = windowIdForSession(sessionId);
+    const winId = windowIdForProject(body);
     const label = sessionLabel(body);
     const tabTitle = 'Claude';
     const windowTitle = `Claude — ${label}`;
 
+    if (opts?.forceNew) {
+      this.dropStaleClaudeMappings(winId, windowTitle);
+    }
+
     let threadId = topicManager.getThreadForSnapshot(winId, windowTitle, tabTitle);
+    if (!threadId) {
+      // Reclaim orphan title mappings (old session-hash windowIds) for this project.
+      for (const m of topicManager.getAllMappings()) {
+        if (m.windowTitle === windowTitle && m.tabTitle === tabTitle) {
+          threadId = m.threadId;
+          topicManager.updateMappingTarget(m.threadId, winId, windowTitle, tabTitle);
+          const cur = topicManager.resolveThread(m.threadId);
+          if (cur && sessionId !== 'unknown') {
+            cur.composerId = sessionId;
+            cur.lastActive = Date.now();
+            topicManager.persistInPlace();
+          }
+          break;
+        }
+      }
+    }
+
     if (!threadId) {
       const icon = topicIconForPhase(phase === 'idle' ? 'new' : phase);
       try {
         const result = await queue.enqueue(
-          () => api.createForumTopic(chatId, windowTitle.substring(0, 128), {
+          () => api.createForumTopic(chatId, formatClaudeForumTopicName(label), {
             iconColor: icon.iconColor,
           } satisfies ForumTopicOptions),
           'send'
@@ -341,43 +448,85 @@ export class ClaudeBridge {
           composerId: sessionId,
         });
         this.topicIconPhase.set(threadId, phase === 'idle' ? 'new' : phase);
+        this.topicNameEnsured.add(threadId);
         console.log(`[claude-bridge] Created topic ${threadId} for ${windowTitle}`);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         console.warn(`[claude-bridge] Failed to create topic: ${msg}`);
         return undefined;
       }
+    } else if (sessionId && sessionId !== 'unknown') {
+      const existing = topicManager.resolveThread(threadId);
+      if (existing && existing.composerId !== sessionId) {
+        topicManager.registerMapping({
+          ...existing,
+          windowId: winId,
+          lastActive: Date.now(),
+          composerId: sessionId,
+        });
+      }
     }
 
-    await this.setTopicIcon(threadId, phase);
+    const iconOk = await this.setTopicIcon(threadId, phase);
+    if (!iconOk) {
+      // Dead topic discovered via icon edit — recreate once.
+      if (!opts?.forceNew) {
+        return this.ensureClaudeTopic(body, phase, { forceNew: true });
+      }
+      return undefined;
+    }
     return threadId;
   }
 
-  private async setTopicIcon(threadId: number, phase: TopicIconPhase): Promise<void> {
-    if (this.topicIconPhase.get(threadId) === phase) return;
+  /** @returns false when the Telegram topic no longer exists */
+  private async setTopicIcon(threadId: number, phase: TopicIconPhase): Promise<boolean> {
     const sink = this.sink;
     const api = sink?.getApi();
     const chatId = sink?.getChatId();
     const queue = sink?.getSendQueue();
-    if (!api || chatId == null || !queue) return;
+    const topicManager = sink?.getTopicManager();
+    if (!api || chatId == null || !queue) return true;
+
+    const needName = !this.topicNameEnsured.has(threadId);
+    if (this.topicIconPhase.get(threadId) === phase && !needName) return true;
 
     const style = topicIconForPhase(phase);
+    const mapping = topicManager?.resolveThread(threadId);
+    const opts: { iconCustomEmojiId: string; iconColor: number; name?: string } = {
+      iconCustomEmojiId: '',
+      iconColor: style.iconColor,
+    };
+    if (needName && mapping) {
+      const label = mapping.windowTitle.replace(/^Claude — /, '') || 'project';
+      opts.name = formatClaudeForumTopicName(label);
+    } else if (needName) {
+      opts.name = formatClaudeForumTopicName('project');
+    }
+
     try {
       await queue.enqueue(
-        () => api.editForumTopic(chatId, threadId, {
-          iconCustomEmojiId: '',
-          iconColor: style.iconColor,
-        }),
+        () => api.editForumTopic(chatId, threadId, opts),
         'edit'
       );
       this.topicIconPhase.set(threadId, phase);
+      if (needName) this.topicNameEnsured.add(threadId);
+      return true;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      if (isDeadTopicError(msg)) {
+        topicManager?.removeMapping(threadId);
+        this.topicIconPhase.delete(threadId);
+        this.topicNameEnsured.delete(threadId);
+        console.warn(`[claude-bridge] Icon update hit dead topic ${threadId} — mapping dropped`);
+        return false;
+      }
       if (!msg.includes('TOPIC_NOT_MODIFIED')) {
         console.warn(`[claude-bridge] Icon update failed (${threadId}): ${msg}`);
       } else {
         this.topicIconPhase.set(threadId, phase);
+        if (needName) this.topicNameEnsured.add(threadId);
       }
+      return true;
     }
   }
 
@@ -385,12 +534,13 @@ export class ClaudeBridge {
     threadId: number,
     html: string,
     keyboard?: TgKeyboard
-  ): Promise<number | undefined> {
+  ): Promise<{ messageId?: number; deadTopic?: boolean }> {
     const sink = this.sink;
     const api = sink?.getApi();
     const chatId = sink?.getChatId();
     const queue = sink?.getSendQueue();
-    if (!api || chatId == null || !queue) return undefined;
+    const topicManager = sink?.getTopicManager();
+    if (!api || chatId == null || !queue) return {};
 
     try {
       const sent = await queue.enqueue(
@@ -401,11 +551,16 @@ export class ClaudeBridge {
         }),
         'send'
       );
-      return sent.message_id;
+      return { messageId: sent.message_id };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.warn(`[claude-bridge] Send failed: ${msg}`);
-      return undefined;
+      if (isDeadTopicError(msg)) {
+        topicManager?.removeMapping(threadId);
+        this.topicIconPhase.delete(threadId);
+        return { deadTopic: true };
+      }
+      return {};
     }
   }
 
@@ -448,14 +603,18 @@ export class ClaudeBridge {
 
   /**
    * Handle a Telegram text message in a Claude topic: run
-   * `claude -p --resume <session>` and post the reply into the same topic.
+   * `claude -p -c` in the project cwd and post the reply into the same topic.
    */
   async handleTelegramPrompt(mapping: TopicMapping, text: string): Promise<void> {
-    const threadId = mapping.threadId;
     const meta = this.resolveSessionMeta(mapping);
+    const body: ClaudeHookBody = {
+      session_id: meta?.sessionId ?? mapping.composerId,
+      cwd: meta?.cwd,
+    };
+
     if (!meta) {
       await this.sendHtml(
-        threadId,
+        mapping.threadId,
         '⚠️ Não achei a sessão Claude deste tópico.\n' +
         'Abre o projeto no Claude Code/Desktop uma vez (para o hook gravar o session id) e tenta de novo.'
       );
@@ -463,14 +622,15 @@ export class ClaudeBridge {
     }
 
     if (this.promptInflight.has(meta.sessionId)) {
-      await this.sendHtml(threadId, '⏳ Já há um prompt a correr nesta sessão. Espera a resposta.');
+      await this.deliverHtml(body, 'generating', '⏳ Já há um prompt a correr nesta sessão. Espera a resposta.');
       return;
     }
 
     const binary = resolveClaudeBinary();
     if (!binary) {
-      await this.sendHtml(
-        threadId,
+      await this.deliverHtml(
+        body,
+        'error',
         '⚠️ Binário do Claude não encontrado.\n' +
         'Instala Claude Desktop / Claude Code, ou define <code>CLAUDE_BIN</code>.'
       );
@@ -478,9 +638,9 @@ export class ClaudeBridge {
     }
 
     this.promptInflight.add(meta.sessionId);
-    await this.setTopicIcon(threadId, 'generating');
-    const statusId = await this.sendHtml(
-      threadId,
+    const statusId = await this.deliverHtml(
+      body,
+      'generating',
       `⏳ <b>Claude</b> a processar…\n<code>${escapeHtml(text.slice(0, 200))}</code>`
     );
 
@@ -492,28 +652,42 @@ export class ClaudeBridge {
         prompt: text,
         binary,
       });
+      console.log(`[claude-bridge] Prompt done ok=${result.ok} len=${result.text.length} err=${result.error ?? ''}`);
 
-      const reply = result.ok
-        ? escapeHtml(result.text).slice(0, 3800)
-        : `⚠️ Claude falhou: ${escapeHtml(result.error ?? 'unknown')}` +
-          (result.text ? `\n\n<pre>${escapeHtml(result.text).slice(0, 2000)}</pre>` : '');
+      // Keep the useful answer; strip classifier sermons that sometimes get
+      // appended when the local transcript is messy.
+      let answer = result.text;
+      const cut = answer.search(/\n\nAnd flagging|\n\nI'm not going to|\n\nThis message contains/i);
+      if (cut > 0) answer = answer.slice(0, cut).trim();
 
-      const api = this.sink?.getApi();
-      const chatId = this.sink?.getChatId();
-      const queue = this.sink?.getSendQueue();
-      if (api && chatId != null && queue && statusId != null && result.ok) {
-        try {
-          await queue.enqueue(
-            () => api.editMessageText(chatId, statusId, reply, { parse_mode: 'HTML' }),
-            'edit'
-          );
-        } catch {
-          await this.sendHtml(threadId, reply);
+      const reply = result.ok && answer
+        ? escapeHtml(answer).slice(0, 3800)
+        : `⚠️ Claude falhou: ${escapeHtml(result.error ?? 'sem resposta')}` +
+          (answer ? `\n\n<pre>${escapeHtml(answer).slice(0, 1500)}</pre>` : '');
+
+      await this.deliverHtml(body, result.ok ? 'idle' : 'error', reply);
+      if (statusId != null) {
+        const api = this.sink?.getApi();
+        const chatId = this.sink?.getChatId();
+        const queue = this.sink?.getSendQueue();
+        if (api && chatId != null && queue) {
+          try {
+            await queue.enqueue(
+              () => api.editMessageText(
+                chatId,
+                statusId,
+                result.ok ? '✅ Respondido abaixo' : '⚠️ Falhou — ver mensagem abaixo',
+                { parse_mode: 'HTML' }
+              ),
+              'edit'
+            );
+          } catch { /* ok */ }
         }
-      } else {
-        await this.sendHtml(threadId, reply);
       }
-      await this.setTopicIcon(threadId, result.ok ? 'idle' : 'error');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[claude-bridge] Prompt exception: ${msg}`);
+      await this.deliverHtml(body, 'error', `⚠️ Erro ao chamar Claude: ${escapeHtml(msg)}`);
     } finally {
       this.promptInflight.delete(meta.sessionId);
     }
