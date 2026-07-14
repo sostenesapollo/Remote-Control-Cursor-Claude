@@ -67,6 +67,14 @@ export class RawTelegramTransport extends BaseTelegramTransport {
     this.running = true;
     this.onBotConnected();
 
+    if (this.config.sendOnly) {
+      console.log(
+        '[telegram-raw] SEND-ONLY mode — outbound messages/topics on; no getUpdates ' +
+        '(safe alongside another Mac that owns the long-poll)'
+      );
+      return;
+    }
+
     this.pollLoop().catch(err => {
       if (this.running) {
         console.error('[telegram-raw] Poll loop crashed:', err);

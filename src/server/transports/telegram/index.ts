@@ -127,6 +127,15 @@ export class TelegramTransport extends BaseTelegramTransport {
       console.warn(`[telegram] setMyCommands failed: ${err instanceof Error ? err.message : err}`)
     );
 
+    if (this.config.sendOnly) {
+      console.log(
+        '[telegram] SEND-ONLY mode — outbound messages/topics on; no getUpdates ' +
+        '(safe alongside another Mac that owns the long-poll)'
+      );
+      this.onBotConnected();
+      return;
+    }
+
     console.log('[telegram] Starting long-poll...');
 
     let startFired = false;

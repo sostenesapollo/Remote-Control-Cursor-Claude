@@ -34,6 +34,7 @@ export function loadConfig(): ServerConfig {
       botToken: process.env.TELEGRAM_BOT_TOKEN ?? '',
       preRegisteredUsers,
       impl: (process.env.TELEGRAM_IMPL === 'raw' ? 'raw' : 'grammy') as 'grammy' | 'raw',
+      sendOnly: process.env.TELEGRAM_SEND_ONLY === 'true',
     },
     claudeBridgeEnabled: process.env.CLAUDE_BRIDGE_ENABLED !== 'false',
     claudePermissionTimeoutMs: parseInt(process.env.CLAUDE_PERMISSION_TIMEOUT_MS ?? '280000', 10),

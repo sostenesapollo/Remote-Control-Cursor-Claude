@@ -377,4 +377,10 @@ export interface TelegramConfig {
   botToken: string;
   preRegisteredUsers: number[];
   impl: 'grammy' | 'raw';
+  /**
+   * Push Cursor/Claude activity to Telegram without getUpdates.
+   * Use on a second Mac sharing the same bot token so it doesn't fight
+   * the primary Mac's long-poll (409 Conflict).
+   */
+  sendOnly: boolean;
 }

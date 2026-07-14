@@ -17,6 +17,12 @@ import {
   extractLastRoleText,
   resolveClaudeTranscriptPath,
 } from './claude-transcript.js';
+import {
+  formatAskUserQuestionHtml,
+  optionLetter,
+  parseAskUserQuestionInput,
+  type AskUserQuestionInput,
+} from './claude-ask.js';
 
 export interface ClaudeHookBody {
   session_id?: string;
@@ -48,6 +54,11 @@ interface PendingPermission {
   createdAt: number;
   threadId: number;
   messageId?: number;
+  /** When set, Telegram option buttons answer AskUserQuestion via updatedInput. */
+  ask?: AskUserQuestionInput;
+  /** Accumulated answers keyed by question text (multi-question). */
+  answers?: Record<string, string>;
+  activeQuestionIndex?: number;
 }
 
 const CLAUDE_WINDOW_PREFIX = 'claude::';
@@ -109,6 +120,13 @@ export class ClaudeBridge {
   /** sessionId → last known cwd / label from hooks */
   private sessions = new Map<string, { cwd: string; label: string; updatedAt: number }>();
   private promptInflight = new Set<string>();
+  /** Last assistant text posted per session — avoid duplicate Stop spam. */
+  private lastPostedAssistant = new Map<string, string>();
+  /** Skip UserPromptSubmit echo right after a Telegram→Claude prompt. */
+  private lastTelegramPromptAt = 0;
+  private lastTelegramPromptText = '';
+  /** AskUserQuestion tool_use_id already shown in Telegram — skip duplicate hooks. */
+  private askShownToolUses = new Set<string>();
 
   constructor(permissionTimeoutMs = DEFAULT_PERMISSION_TIMEOUT_MS) {
     this.permissionTimeoutMs = permissionTimeoutMs;
@@ -119,15 +137,22 @@ export class ClaudeBridge {
   }
 
   isPermissionCallback(data: string): boolean {
-    return data.startsWith('cla:') || data.startsWith('cld:');
+    return data.startsWith('cla:') || data.startsWith('cld:') || data.startsWith('clq:');
   }
 
-  /** Resolve a Telegram button press for Claude allow/deny. */
+  /** Resolve a Telegram button press for Claude allow/deny/question answers. */
   handlePermissionCallback(data: string): boolean {
+    if (data.startsWith('clq:')) {
+      return this.handleAskOptionCallback(data);
+    }
+
     const allow = data.startsWith('cla:');
     const id = data.slice(4);
     const pending = this.pending.get(id);
     if (!pending) return false;
+
+    // AskUserQuestion without picking an option: Allow alone is useless — ignore.
+    if (pending.ask && allow) return true;
 
     this.pending.delete(id);
     const decision = this.buildDecision(pending.event, allow);
@@ -140,6 +165,63 @@ export class ClaudeBridge {
       api.editMessageText(chatId, pending.messageId, label).catch(() => {});
     }
     void this.setTopicIcon(pending.threadId, allow ? 'running_tool' : 'error');
+    return true;
+  }
+
+  private handleAskOptionCallback(data: string): boolean {
+    // clq:{id}:{questionIndex}:{optionIndex}
+    const parts = data.split(':');
+    if (parts.length < 4) return false;
+    const id = parts[1];
+    const qi = parseInt(parts[2], 10);
+    const oi = parseInt(parts[3], 10);
+    const pending = this.pending.get(id);
+    if (!pending?.ask || Number.isNaN(qi) || Number.isNaN(oi)) return false;
+
+    const q = pending.ask.questions[qi];
+    const opt = q?.options[oi];
+    if (!q || !opt) return false;
+
+    const answers = { ...(pending.answers ?? {}) };
+    answers[q.question] = opt.label;
+    pending.answers = answers;
+
+    const nextUnanswered = pending.ask.questions.findIndex((qq) => !(qq.question in answers));
+    if (nextUnanswered >= 0) {
+      pending.activeQuestionIndex = nextUnanswered;
+      const api = this.sink?.getApi();
+      const chatId = this.sink?.getChatId();
+      if (api && chatId != null && pending.messageId != null) {
+        const html = formatAskUserQuestionHtml(pending.ask, '') +
+          `\n\n✅ <b>${escapeHtml(optionLetter(oi))})</b> ${escapeHtml(opt.label)}` +
+          `\n\n👉 Próxima pergunta…`;
+        const keyboard = this.buildAskKeyboard(pending.id, pending.ask, nextUnanswered);
+        api.editMessageText(chatId, pending.messageId, html, {
+          parse_mode: 'HTML',
+          reply_markup: keyboard,
+        }).catch(() => {});
+      }
+      return true;
+    }
+
+    // All answered — resolve with updatedInput
+    this.pending.delete(id);
+    pending.resolve(this.buildAskAnswerDecision(pending.event, pending.ask, answers));
+
+    const api = this.sink?.getApi();
+    const chatId = this.sink?.getChatId();
+    if (api && chatId != null && pending.messageId != null) {
+      const summary = Object.entries(answers)
+        .map(([qq, a]) => `• ${escapeHtml(qq)}\n  → <b>${escapeHtml(a)}</b>`)
+        .join('\n');
+      api.editMessageText(
+        chatId,
+        pending.messageId,
+        `✅ <b>Respondido no Telegram</b>\n${summary}`,
+        { parse_mode: 'HTML' }
+      ).catch(() => {});
+    }
+    void this.setTopicIcon(pending.threadId, 'running_tool');
     return true;
   }
 
@@ -157,16 +239,19 @@ export class ClaudeBridge {
       case 'PermissionRequest':
         return this.handlePermissionRequest(body);
       case 'PreToolUse':
-        // With bypassPermissions most calls never reach PermissionRequest;
-        // PreToolUse is still useful to mirror activity. Only hold when
-        // permission_mode is ask/default (not bypass).
-        if (this.shouldHoldPreToolUse(body)) {
+        // Always hold AskUserQuestion so Telegram can answer with buttons.
+        // Other tools: only hold when permission_mode is ask/default.
+        if (body.tool_name === 'AskUserQuestion' || this.shouldHoldPreToolUse(body)) {
           return this.handlePreToolUseHold(body);
         }
-        await this.notifyToolActivity(body, 'running_tool');
+        await this.ensureClaudeTopic(body, 'running_tool');
         return {};
       case 'PostToolUse':
-        await this.notifyToolActivity(body, 'idle');
+        if (body.tool_name === 'AskUserQuestion') {
+          await this.ensureClaudeTopic(body, 'idle');
+          return {};
+        }
+        await this.ensureClaudeTopic(body, 'idle');
         return {};
       case 'PostToolUseFailure':
         await this.notifyFailure(body);
@@ -226,6 +311,62 @@ export class ClaudeBridge {
     };
   }
 
+  private buildAskAnswerDecision(
+    event: 'PermissionRequest' | 'PreToolUse',
+    ask: AskUserQuestionInput,
+    answers: Record<string, string>
+  ): Record<string, unknown> {
+    const updatedInput = {
+      questions: ask.questions.map((q) => ({
+        question: q.question,
+        header: q.header,
+        multiSelect: q.multiSelect ?? false,
+        options: q.options.map((o) => ({
+          label: o.label,
+          description: o.description,
+        })),
+      })),
+      answers,
+    };
+
+    if (event === 'PermissionRequest') {
+      return {
+        hookSpecificOutput: {
+          hookEventName: 'PermissionRequest',
+          decision: {
+            behavior: 'allow',
+            updatedInput,
+          },
+        },
+      };
+    }
+    return {
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'allow',
+        permissionDecisionReason: 'Answered from CursorRemote Telegram',
+        updatedInput,
+      },
+    };
+  }
+
+  private buildAskKeyboard(
+    pendingId: string,
+    ask: AskUserQuestionInput,
+    questionIndex: number
+  ): TgKeyboard {
+    const q = ask.questions[questionIndex] ?? ask.questions[0];
+    const kb = tgKeyboard();
+    q.options.forEach((opt, oi) => {
+      const letter = optionLetter(oi);
+      const label = `${letter}) ${opt.label}`.slice(0, 64);
+      kb.text(label, `clq:${pendingId}:${questionIndex}:${oi}`);
+      kb.row();
+    });
+    kb.text('❌ Cancelar', `cld:${pendingId}`);
+    return kb.build();
+  }
+
   private async handlePermissionRequest(body: ClaudeHookBody): Promise<Record<string, unknown>> {
     return this.holdForTelegramDecision(body, 'PermissionRequest');
   }
@@ -238,19 +379,40 @@ export class ClaudeBridge {
     body: ClaudeHookBody,
     event: 'PermissionRequest' | 'PreToolUse'
   ): Promise<Record<string, unknown>> {
-    const id = shortId();
-    const tool = escapeHtml(body.tool_name ?? 'tool');
-    const input = escapeHtml(summarizeToolInput(body.tool_input));
-    const html =
-      `<b>🔐 Claude needs approval</b>\n` +
-      `<code>${tool}</code>\n` +
-      (input ? `<pre>${input}</pre>\n` : '') +
-      `<i>${escapeHtml(sessionLabel(body))}</i>`;
+    const ask =
+      body.tool_name === 'AskUserQuestion'
+        ? parseAskUserQuestionInput(body.tool_input)
+        : null;
+    const toolUseId = typeof body.tool_use_id === 'string' ? body.tool_use_id : '';
 
-    const keyboard: TgKeyboard = tgKeyboard()
-      .text('✅ Allow', `cla:${id}`)
-      .text('❌ Deny', `cld:${id}`)
-      .build();
+    // PreToolUse + PermissionRequest can both fire for the same AskUserQuestion.
+    // Only one Telegram prompt; the second hook auto-allows.
+    if (ask && toolUseId && this.askShownToolUses.has(toolUseId)) {
+      return this.buildDecision(event, true);
+    }
+
+    const id = shortId();
+    if (ask && toolUseId) this.askShownToolUses.add(toolUseId);
+
+    let html: string;
+    let keyboard: TgKeyboard;
+
+    if (ask) {
+      html = formatAskUserQuestionHtml(ask, sessionLabel(body));
+      keyboard = this.buildAskKeyboard(id, ask, 0);
+    } else {
+      const tool = escapeHtml(body.tool_name ?? 'tool');
+      const input = escapeHtml(summarizeToolInput(body.tool_input));
+      html =
+        `<b>🔐 Claude needs approval</b>\n` +
+        `<code>${tool}</code>\n` +
+        (input ? `<pre>${input}</pre>\n` : '') +
+        `<i>${escapeHtml(sessionLabel(body))}</i>`;
+      keyboard = tgKeyboard()
+        .text('✅ Allow', `cla:${id}`)
+        .text('❌ Deny', `cld:${id}`)
+        .build();
+    }
 
     const messageId = await this.deliverHtml(body, 'waiting_approval', html, keyboard);
     const threadId =
@@ -259,11 +421,14 @@ export class ClaudeBridge {
       )?.threadId ?? 0;
 
     return new Promise((resolve) => {
+      const clearAsk = () => {
+        if (toolUseId) this.askShownToolUses.delete(toolUseId);
+      };
       const timer = setTimeout(() => {
         if (!this.pending.has(id)) return;
         this.pending.delete(id);
+        clearAsk();
         console.warn(`[claude-bridge] Permission ${id} timed out — no Telegram decision`);
-        // Stay silent: Claude falls through to its normal local permission UI.
         resolve({});
       }, this.permissionTimeoutMs);
 
@@ -273,8 +438,12 @@ export class ClaudeBridge {
         threadId,
         messageId,
         createdAt: Date.now(),
+        ask: ask ?? undefined,
+        answers: {},
+        activeQuestionIndex: 0,
         resolve: (decision) => {
           clearTimeout(timer);
+          clearAsk();
           resolve(decision);
         },
       });
@@ -282,7 +451,6 @@ export class ClaudeBridge {
   }
 
   private async notifyToolActivity(body: ClaudeHookBody, phase: TopicIconPhase): Promise<void> {
-    // Only bump icon for tools — Cursor-style mirror is chat text, not every tool call.
     await this.ensureClaudeTopic(body, phase);
   }
 
@@ -319,21 +487,40 @@ export class ClaudeBridge {
       await this.ensureClaudeTopic(body, 'generating');
       return;
     }
+
+    // Don't echo prompts we just injected from Telegram.
+    const trimmed = prompt.trim();
+    if (
+      this.promptInflight.has(body.session_id ?? '') ||
+      (Date.now() - this.lastTelegramPromptAt < 120_000 &&
+        trimmed === this.lastTelegramPromptText)
+    ) {
+      await this.ensureClaudeTopic(body, 'generating');
+      return;
+    }
+
     await this.deliverHtml(
       body,
       'generating',
-      `<b>You:</b> ${escapeHtml(prompt.trim()).slice(0, 3500)}`
+      `<b>You:</b> ${escapeHtml(trimmed).slice(0, 3500)}`
     );
   }
 
   private async notifyStop(body: ClaudeHookBody): Promise<void> {
     const path = resolveClaudeTranscriptPath(body);
     const answer = path ? extractLastRoleText(path, 'assistant') : null;
+    const sid = body.session_id ?? '';
     if (answer?.trim()) {
+      const text = answer.trim();
+      if (this.lastPostedAssistant.get(sid) === text) {
+        await this.ensureClaudeTopic(body, 'idle');
+        return;
+      }
+      this.lastPostedAssistant.set(sid, text);
       await this.deliverHtml(
         body,
         'idle',
-        escapeHtml(answer.trim()).slice(0, 3800)
+        escapeHtml(text).slice(0, 3800)
       );
       return;
     }
@@ -638,6 +825,8 @@ export class ClaudeBridge {
     }
 
     this.promptInflight.add(meta.sessionId);
+    this.lastTelegramPromptAt = Date.now();
+    this.lastTelegramPromptText = text.trim();
     const statusId = await this.deliverHtml(
       body,
       'generating',
