@@ -87,6 +87,7 @@ export class RawTelegramApiClient implements TelegramApiClient {
       message_thread_id: threadId,
     };
     if (options.name != null) body.name = options.name;
+    if (options.iconColor != null) body.icon_color = options.iconColor;
     if (options.iconCustomEmojiId != null) {
       body.icon_custom_emoji_id = options.iconCustomEmojiId;
     }

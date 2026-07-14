@@ -30,11 +30,12 @@ function grammyApiAdapter(bot: Bot): TelegramApiClient {
       return bot.api.createForumTopic(chatId, name, opts);
     },
     editForumTopic: (chatId, threadId, options) => {
-      const opts: { name?: string; icon_custom_emoji_id?: string } = {};
+      const opts: { name?: string; icon_custom_emoji_id?: string; icon_color?: number } = {};
       if (options.name != null) opts.name = options.name;
       if (options.iconCustomEmojiId != null) {
         opts.icon_custom_emoji_id = options.iconCustomEmojiId;
       }
+      if (options.iconColor != null) opts.icon_color = options.iconColor;
       return bot.api.editForumTopic(chatId, threadId, opts).then(() => {});
     },
     deleteForumTopic: (chatId, threadId) =>

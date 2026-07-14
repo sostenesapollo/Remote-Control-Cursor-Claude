@@ -187,7 +187,6 @@ export class TopicManager {
           const icon = topicIconForPhase('new');
           const result = await api.createForumTopic(chatId, topicName, {
             iconColor: icon.iconColor,
-            iconCustomEmojiId: icon.iconCustomEmojiId,
           });
           const mapping: TopicMapping = {
             threadId: result.message_thread_id,

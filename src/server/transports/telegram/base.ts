@@ -922,7 +922,10 @@ export abstract class BaseTelegramTransport implements Transport {
     try {
       await this.sendQueue.enqueue(
         () => this.api.editForumTopic(this.chatId!, threadId, {
-          iconCustomEmojiId: style.iconCustomEmojiId,
+          // Empty string clears any prior custom-emoji sticker so the colored
+          // circle from iconColor shows (Telegram forum topic dots).
+          iconCustomEmojiId: '',
+          iconColor: style.iconColor,
         }),
         'edit'
       );
@@ -930,6 +933,11 @@ export abstract class BaseTelegramTransport implements Transport {
       console.log(`[telegram] Topic ${threadId} icon → ${style.phase}`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      // TOPIC_NOT_MODIFIED is fine (same color already applied).
+      if (msg.includes('TOPIC_NOT_MODIFIED')) {
+        this.topicIconPhaseByThread.set(threadId, style.phase);
+        return;
+      }
       // Topic may have been deleted, or Manage Topics revoked — don't spam.
       if (!msg.includes('TOPIC_ID_INVALID') && !msg.includes('not enough rights')) {
         console.warn(`[telegram] Topic icon update failed (${threadId}): ${msg}`);
@@ -958,7 +966,6 @@ export abstract class BaseTelegramTransport implements Transport {
       const icon = topicIconForPhase('new');
       const result = await this.api.createForumTopic(this.chatId, topicName, {
         iconColor: icon.iconColor,
-        iconCustomEmojiId: icon.iconCustomEmojiId,
       });
       this.topicManager.registerMapping({
         threadId: result.message_thread_id,

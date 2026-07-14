@@ -264,7 +264,6 @@ async function doSyncInBackground(
         : icon;
       const result = await api.createForumTopic(chatId, topicName, {
         iconColor: createIcon.iconColor,
-        iconCustomEmojiId: createIcon.iconCustomEmojiId,
       });
       const threadId = result.message_thread_id;
       topicManager.registerMapping({

@@ -2,7 +2,6 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   TOPIC_ICON_COLOR,
-  TOPIC_ICON_EMOJI,
   topicIconForPhase,
   topicIconForSnapshot,
   topicPhaseFromSnapshot,
@@ -23,24 +22,18 @@ describe('topic-icons', () => {
     assert.equal(topicPhaseFromSnapshot('generating', 2), 'waiting_approval');
   });
 
-  it('finished/idle uses green check; new uses blue star', () => {
-    const idle = topicIconForPhase('idle');
-    assert.equal(idle.iconColor, TOPIC_ICON_COLOR.green);
-    assert.equal(idle.iconCustomEmojiId, TOPIC_ICON_EMOJI.check);
-
-    const neu = topicIconForPhase('new');
-    assert.equal(neu.iconColor, TOPIC_ICON_COLOR.blue);
-    assert.equal(neu.iconCustomEmojiId, TOPIC_ICON_EMOJI.star);
+  it('uses colored circle palette (waiting=blue, idle=green, new=pink)', () => {
+    assert.equal(topicIconForPhase('waiting_approval').iconColor, TOPIC_ICON_COLOR.blue);
+    assert.equal(topicIconForPhase('idle').iconColor, TOPIC_ICON_COLOR.green);
+    assert.equal(topicIconForPhase('new').iconColor, TOPIC_ICON_COLOR.pink);
+    assert.equal(topicIconForPhase('error').iconColor, TOPIC_ICON_COLOR.red);
+    assert.equal(topicIconForPhase('thinking').iconColor, TOPIC_ICON_COLOR.purple);
+    assert.equal(topicIconForPhase('running_tool').iconColor, TOPIC_ICON_COLOR.yellow);
   });
 
-  it('running_tool uses yellow bolt; error uses red double-alert', () => {
-    const run = topicIconForSnapshot('running_tool');
-    assert.equal(run.phase, 'running_tool');
-    assert.equal(run.iconColor, TOPIC_ICON_COLOR.yellow);
-    assert.equal(run.iconCustomEmojiId, TOPIC_ICON_EMOJI.bolt);
-
-    const err = topicIconForSnapshot('error');
-    assert.equal(err.iconColor, TOPIC_ICON_COLOR.red);
-    assert.equal(err.iconCustomEmojiId, TOPIC_ICON_EMOJI.doubleAlert);
+  it('snapshot helper respects approval override color', () => {
+    const style = topicIconForSnapshot('idle', 1);
+    assert.equal(style.phase, 'waiting_approval');
+    assert.equal(style.iconColor, TOPIC_ICON_COLOR.blue);
   });
 });
