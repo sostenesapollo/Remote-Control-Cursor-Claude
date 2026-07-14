@@ -6,7 +6,7 @@ import type { ForumTopicOptions, TelegramApiClient, TgKeyboard } from './transpo
 import { tgKeyboard } from './transports/telegram/tg-types.js';
 import type { TopicManager, TopicMapping } from './transports/telegram/topic-manager.js';
 import type { SendQueue } from './transports/send-queue.js';
-import { topicIconForPhase, type TopicIconPhase } from './transports/telegram/topic-icons.js';
+import { topicIconForBrand, type TopicIconPhase } from './transports/telegram/topic-icons.js';
 import { formatClaudeForumTopicName } from './transports/telegram/topic-names.js';
 import {
   lookupSessionFromDisk,
@@ -617,7 +617,7 @@ export class ClaudeBridge {
     }
 
     if (!threadId) {
-      const icon = topicIconForPhase(phase === 'idle' ? 'new' : phase);
+      const icon = topicIconForBrand('claude', phase === 'idle' ? 'new' : phase);
       try {
         const result = await queue.enqueue(
           () => api.createForumTopic(chatId, formatClaudeForumTopicName(label), {
@@ -677,7 +677,7 @@ export class ClaudeBridge {
     const needName = !this.topicNameEnsured.has(threadId);
     if (this.topicIconPhase.get(threadId) === phase && !needName) return true;
 
-    const style = topicIconForPhase(phase);
+    const style = topicIconForBrand('claude', phase);
     const mapping = topicManager?.resolveThread(threadId);
     const opts: { iconCustomEmojiId: string; iconColor: number; name?: string } = {
       iconCustomEmojiId: '',

@@ -11,7 +11,7 @@ import type { PlanBlock } from '../../types.js';
 import { cleanTabTitle } from '../../dom-extractor.js';
 import { normalizeWindowTitle } from './topic-manager.js';
 import { tgKeyboard, type BotContext, type TelegramApiClient } from './tg-types.js';
-import { topicIconForPhase, topicIconForSnapshot } from './topic-icons.js';
+import { topicIconForBrand } from './topic-icons.js';
 import { formatCursorForumTopicName } from './topic-names.js';
 
 export interface CommandDeps {
@@ -267,14 +267,8 @@ async function doSyncInBackground(
     const topicName = formatCursorForumTopicName(snapshot.windowTitle, cleanedTab);
     try {
       await sleep(500);
-      const icon = topicIconForSnapshot(
-        snapshot.agentStatus ?? 'idle',
-        snapshot.pendingApprovals?.length ?? 0
-      );
-      // Brand-new topics get the pink "new" circle; busy agents use live status.
-      const createIcon = (snapshot.agentStatus ?? 'idle') === 'idle' && !(snapshot.pendingApprovals?.length)
-        ? topicIconForPhase('new')
-        : icon;
+      // Fixed Cursor brand color (blue).
+      const createIcon = topicIconForBrand('cursor');
       const result = await api.createForumTopic(chatId, topicName, {
         iconColor: createIcon.iconColor,
       });

@@ -1,30 +1,32 @@
 /**
- * Forum topic display names — emoji prefix so Cursor vs Claude topics
- * are easy to spot in the Telegram topic list.
+ * Forum topic display names.
  *
- * Internal TopicMapping.windowTitle stays without the emoji (match/logic).
- * Only the Telegram topic `name` shown in the UI gets the prefix.
- *
- * Optional AGENT_NAME / TELEGRAM_AGENT_LABEL (e.g. "Sosteness") inserts a
- * machine tag so two Macs sharing one group stay visually distinct.
+ * Brand identity uses Telegram's colored topic circle (see topic-icons),
+ * not emoji in the title. Optional AGENT_NAME / TELEGRAM_AGENT_LABEL still
+ * prefixes the machine so two Macs in one group stay distinct.
  */
-
-export const CURSOR_TOPIC_EMOJI = '🖱️';
-export const CLAUDE_TOPIC_EMOJI = '🤖';
 
 function agentTag(): string {
   return (process.env.AGENT_NAME ?? process.env.TELEGRAM_AGENT_LABEL ?? '').trim();
 }
 
+/** Strip legacy emoji prefixes (🖱️ / 🤖) from names we rename. */
+export function stripTopicNameDecorations(name: string): string {
+  return name
+    .replace(/^[🖱️🤖]\s*/u, '')
+    .replace(/^(🖱️|🤖)\s*/u, '')
+    .trim();
+}
+
 export function formatCursorForumTopicName(windowTitle: string, tabTitle: string): string {
   const tag = agentTag();
-  const head = tag ? `${CURSOR_TOPIC_EMOJI} ${tag} · ` : `${CURSOR_TOPIC_EMOJI} `;
+  const head = tag ? `${tag} · ` : '';
   return `${head}${windowTitle} — ${tabTitle}`.substring(0, 128);
 }
 
 export function formatClaudeForumTopicName(projectLabel: string): string {
   const tag = agentTag();
-  const head = tag ? `${CLAUDE_TOPIC_EMOJI} ${tag} · ` : `${CLAUDE_TOPIC_EMOJI} `;
+  const head = tag ? `${tag} · ` : '';
   return `${head}Claude — ${projectLabel}`.substring(0, 128);
 }
 
@@ -42,4 +44,14 @@ export function formatForumTopicNameForMapping(mapping: {
     return formatClaudeForumTopicName(label);
   }
   return formatCursorForumTopicName(mapping.windowTitle, mapping.tabTitle);
+}
+
+export function isClaudeTopicMapping(mapping: {
+  windowId: string;
+  windowTitle: string;
+}): boolean {
+  return (
+    mapping.windowId.startsWith('claude::') ||
+    mapping.windowTitle.startsWith('Claude — ')
+  );
 }

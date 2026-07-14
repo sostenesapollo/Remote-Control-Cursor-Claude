@@ -1,19 +1,31 @@
 import type { AgentStatus } from '../../types.js';
 
 /**
- * Telegram forum topic icon colors — shown as solid colored circles when no
- * custom emoji is set. Valid both on createForumTopic and editForumTopic
- * (edit accepts icon_color in practice even though older docs omit it).
+ * Telegram forum topic icon colors — solid colored circles (no custom emoji).
+ * Valid on createForumTopic / editForumTopic.
  * @see https://core.telegram.org/bots/api#createforumtopic
  */
 export const TOPIC_ICON_COLOR = {
-  blue: 7322096, // 0x6FB9F0 — 🔵
-  yellow: 16766590, // 0xFFD67E — 🟡
-  purple: 13338331, // 0xCB86DB — 🟣
-  green: 9367192, // 0x8EEE98 — 🟢
-  pink: 16749490, // 0xFF93B2 — 🩷
-  red: 16478047, // 0xFB6F5F — 🔴
+  blue: 7322096, // 0x6FB9F0
+  yellow: 16766590, // 0xFFD67E
+  purple: 13338331, // 0xCB86DB
+  green: 9367192, // 0x8EEE98
+  pink: 16749490, // 0xFF93B2
+  red: 16478047, // 0xFB6F5F
 } as const;
+
+export type TopicBrand = 'cursor' | 'claude';
+
+/**
+ * Fixed brand colors so Cursor vs Claude is obvious in the topic list.
+ *   Cursor → blue
+ *   Claude → purple
+ * Status (thinking/idle/…) is no longer encoded in the circle.
+ */
+export const TOPIC_BRAND_COLOR: Record<TopicBrand, number> = {
+  cursor: TOPIC_ICON_COLOR.blue,
+  claude: TOPIC_ICON_COLOR.purple,
+};
 
 export type TopicIconPhase =
   | 'new'
@@ -28,11 +40,19 @@ export interface TopicIconStyle {
   phase: TopicIconPhase;
   /** Colored circle (Telegram forum topic color). */
   iconColor: number;
+  brand: TopicBrand;
+}
+
+export function topicIconForBrand(
+  brand: TopicBrand,
+  phase: TopicIconPhase = 'idle'
+): TopicIconStyle {
+  return { brand, phase, iconColor: TOPIC_BRAND_COLOR[brand] };
 }
 
 /**
  * Resolve the visual phase for a live window snapshot.
- * Pending approvals win over raw agentStatus so the icon reflects the blocker.
+ * Kept for activity messaging; brand color no longer follows phase.
  */
 export function topicPhaseFromSnapshot(
   agentStatus: AgentStatus,
@@ -56,39 +76,17 @@ export function topicPhaseFromSnapshot(
   }
 }
 
-/**
- * Colored-circle palette (no custom emoji — Telegram's built-in topic dots).
- *
- *   🩷 new          pink
- *   🟣 thinking     purple
- *   🟡 generating   yellow
- *   🟡 running_tool yellow
- *   🔵 waiting      blue   ← user request
- *   🟢 idle/done    green
- *   🔴 error        red
- */
+/** @deprecated Prefer topicIconForBrand('cursor'|'claude'). Phase ignored for color. */
 export function topicIconForPhase(phase: TopicIconPhase): TopicIconStyle {
-  switch (phase) {
-    case 'new':
-      return { phase, iconColor: TOPIC_ICON_COLOR.pink };
-    case 'thinking':
-      return { phase, iconColor: TOPIC_ICON_COLOR.purple };
-    case 'generating':
-    case 'running_tool':
-      return { phase, iconColor: TOPIC_ICON_COLOR.yellow };
-    case 'waiting_approval':
-      return { phase, iconColor: TOPIC_ICON_COLOR.blue };
-    case 'error':
-      return { phase, iconColor: TOPIC_ICON_COLOR.red };
-    case 'idle':
-    default:
-      return { phase: 'idle', iconColor: TOPIC_ICON_COLOR.green };
-  }
+  return topicIconForBrand('cursor', phase);
 }
 
 export function topicIconForSnapshot(
   agentStatus: AgentStatus,
   pendingApprovalCount = 0
 ): TopicIconStyle {
-  return topicIconForPhase(topicPhaseFromSnapshot(agentStatus, pendingApprovalCount));
+  return topicIconForBrand(
+    'cursor',
+    topicPhaseFromSnapshot(agentStatus, pendingApprovalCount)
+  );
 }

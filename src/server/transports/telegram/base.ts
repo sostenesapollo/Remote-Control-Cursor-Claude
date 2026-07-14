@@ -23,9 +23,13 @@ import {
 import { AGENT_ACTIVITY_STALE_MS } from '../../activity-stale.js';
 import type { TelegramApiClient, BotContext } from './tg-types.js';
 import type { CommandDeps, RegisterDeps } from './commands.js';
-import { topicIconForPhase, topicIconForSnapshot } from './topic-icons.js';
+import { topicIconForBrand, topicIconForSnapshot } from './topic-icons.js';
 import type { TopicIconPhase } from './topic-icons.js';
-import { formatCursorForumTopicName, formatForumTopicNameForMapping } from './topic-names.js';
+import {
+  formatCursorForumTopicName,
+  formatForumTopicNameForMapping,
+  isClaudeTopicMapping,
+} from './topic-names.js';
 import type { ClaudeBridge, ClaudeTelegramSink } from '../../claude-bridge.js';
 import {
   handleSync,
@@ -307,20 +311,27 @@ export abstract class BaseTelegramTransport implements Transport {
     }
   }
 
-  /** Best-effort: prefix existing forum topics with 🖱️ / 🤖 for scannability. */
+  /** Best-effort: strip legacy emoji prefixes + apply brand topic colors. */
   private async renameAllTopicNamesOnce(): Promise<void> {
     if (!this.chatId) return;
     const mappings = this.topicManager.getAllMappings();
     for (const m of mappings) {
       if (this.topicNameEnsured.has(m.threadId)) continue;
       const name = formatForumTopicNameForMapping(m);
+      const brand = isClaudeTopicMapping(m) ? 'claude' : 'cursor';
+      const iconColor = topicIconForBrand(brand).iconColor;
       try {
         await this.sendQueue.enqueue(
-          () => this.api.editForumTopic(this.chatId!, m.threadId, { name }),
+          () => this.api.editForumTopic(this.chatId!, m.threadId, {
+            name,
+            iconCustomEmojiId: '',
+            iconColor,
+          }),
           'edit'
         );
         this.topicNameEnsured.add(m.threadId);
-        console.log(`[telegram] Topic ${m.threadId} renamed → ${name}`);
+        this.topicIconPhaseByThread.set(m.threadId, 'idle');
+        console.log(`[telegram] Topic ${m.threadId} → ${name} (${brand})`);
         await sleep(1200);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -976,14 +987,13 @@ export abstract class BaseTelegramTransport implements Transport {
     );
     const mapping = this.topicManager.resolveThread(threadId);
     const needName = mapping && !this.topicNameEnsured.has(threadId);
+    // Brand color is fixed (Cursor blue) — only re-apply when ensuring name.
     if (this.topicIconPhaseByThread.get(threadId) === style.phase && !needName) return;
 
     try {
       const opts: { iconCustomEmojiId: string; iconColor: number; name?: string } = {
-        // Empty string clears any prior custom-emoji sticker so the colored
-        // circle from iconColor shows (Telegram forum topic dots).
         iconCustomEmojiId: '',
-        iconColor: style.iconColor,
+        iconColor: topicIconForBrand('cursor', style.phase).iconColor,
       };
       if (needName && mapping) {
         opts.name = formatForumTopicNameForMapping(mapping);
@@ -1028,7 +1038,7 @@ export abstract class BaseTelegramTransport implements Transport {
     const topicName = formatCursorForumTopicName(windowTitle, tabTitle);
     try {
       await sleep(TOPIC_CREATE_DELAY_MS);
-      const icon = topicIconForPhase('new');
+      const icon = topicIconForBrand('cursor', 'new');
       const result = await this.api.createForumTopic(this.chatId, topicName, {
         iconColor: icon.iconColor,
       });
