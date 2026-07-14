@@ -19,6 +19,7 @@ import {
 } from './webapp-sessions.js';
 import { createPairCodeStore, type PairCodeStore } from './pair-codes.js';
 import type { CloudTunnel } from './cloud-tunnel.js';
+import type { ClaudeBridge, ClaudeHookBody } from './claude-bridge.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -137,6 +138,7 @@ export class Relay {
   private windowMonitor: WindowMonitor;
   private packageVersion: string;
   private cloudTunnel: CloudTunnel | null;
+  private claudeBridge: ClaudeBridge | null;
 
   private sessionStore: WebappSessionStore;
   private pairCodeStore: PairCodeStore;
@@ -161,7 +163,8 @@ export class Relay {
     commandExecutor: CommandExecutor,
     cdpBridge: CDPBridge,
     windowMonitor: WindowMonitor,
-    cloudTunnel: CloudTunnel | null = null
+    cloudTunnel: CloudTunnel | null = null,
+    claudeBridge: import('./claude-bridge.js').ClaudeBridge | null = null
   ) {
     this.config = config;
     this.stateManager = stateManager;
@@ -169,6 +172,7 @@ export class Relay {
     this.cdpBridge = cdpBridge;
     this.windowMonitor = windowMonitor;
     this.cloudTunnel = cloudTunnel;
+    this.claudeBridge = claudeBridge;
     this.sessionStore = createWebappSessionStore(config.dataDir);
     this.pairCodeStore = createPairCodeStore(config.dataDir);
     this.packageVersion = this.readPackageVersion();
@@ -437,6 +441,35 @@ export class Relay {
         chatTabCount: state.chatTabs?.length ?? 0,
         pendingApprovalCount: state.pendingApprovals?.length ?? 0,
         generation: this.stateManager.generation,
+      });
+    });
+
+    // Claude Code HTTP hooks → same Telegram group (no web auth; localhost/hooks only).
+    const handleClaudeHook = async (req: express.Request, res: express.Response) => {
+      if (!this.claudeBridge || !this.config.claudeBridgeEnabled) {
+        res.status(204).end();
+        return;
+      }
+      try {
+        const event =
+          (req.params.event as string) ||
+          (req.body as ClaudeHookBody)?.hook_event_name ||
+          '';
+        const result = await this.claudeBridge.handleHook(event, (req.body ?? {}) as ClaudeHookBody);
+        res.status(200).json(result ?? {});
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[relay] Claude hook error: ${msg}`);
+        // Non-blocking for Claude — empty 200 continues the local flow.
+        res.status(200).json({});
+      }
+    };
+    this.app.post('/api/claude/hooks/:event', handleClaudeHook);
+    this.app.post('/api/claude/hooks', handleClaudeHook);
+    this.app.get('/api/claude/status', (_req, res) => {
+      res.json({
+        enabled: !!this.claudeBridge && this.config.claudeBridgeEnabled,
+        telegramReady: false,
       });
     });
 

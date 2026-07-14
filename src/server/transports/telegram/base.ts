@@ -25,6 +25,7 @@ import type { TelegramApiClient, BotContext } from './tg-types.js';
 import type { CommandDeps, RegisterDeps } from './commands.js';
 import { topicIconForPhase, topicIconForSnapshot } from './topic-icons.js';
 import type { TopicIconPhase } from './topic-icons.js';
+import type { ClaudeBridge, ClaudeTelegramSink } from '../../claude-bridge.js';
 import {
   handleSync,
   handleSyncAll,
@@ -133,8 +134,29 @@ export abstract class BaseTelegramTransport implements Transport {
   private lastQueueSig = new Map<number, string>();
   /** Last applied topic icon phase per thread — skip redundant editForumTopic calls. */
   private topicIconPhaseByThread = new Map<number, TopicIconPhase>();
+  private claudeBridge: ClaudeBridge | null = null;
   protected authState: AuthState;
   protected registeredUsers: Set<number>;
+
+  /** Attach Claude Code bridge so hooks land in this Telegram group. */
+  attachClaudeBridge(bridge: ClaudeBridge | null): void {
+    this.claudeBridge = bridge;
+    if (bridge) {
+      bridge.setSink(this.createClaudeSink());
+      console.log('[telegram] Claude bridge attached (same Telegram group)');
+    }
+  }
+
+  private createClaudeSink(): ClaudeTelegramSink {
+    const self = this;
+    return {
+      isReady: () => self.started && self.syncEnabled && self.groupId != null && !!self.api,
+      getChatId: () => self.groupId,
+      getApi: () => (self.api ?? null),
+      getSendQueue: () => self.sendQueue ?? null,
+      getTopicManager: () => self.topicManager ?? null,
+    };
+  }
 
   protected get chatId(): number | undefined {
     return this.groupId;
@@ -313,6 +335,7 @@ export abstract class BaseTelegramTransport implements Transport {
         this.saveSyncState();
       },
       resetAllState: () => this.resetAllState(),
+      claudeBridge: this.claudeBridge,
     };
   }
 

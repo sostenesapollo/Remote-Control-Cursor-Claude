@@ -356,6 +356,10 @@ export interface ServerConfig {
   windowTitleQualifier: boolean;
   dataDir: string;
   telegram: TelegramConfig;
+  /** Forward Claude Code HTTP hooks into the same Telegram group. */
+  claudeBridgeEnabled: boolean;
+  /** How long to wait for a Telegram allow/deny on Claude PermissionRequest (ms). */
+  claudePermissionTimeoutMs: number;
   /** This process is the public multi-tenant hub (no local CDP). */
   cloudHub: boolean;
   /** Local relay dials this hub URL for remote phone access (e.g. https://connect.blocks.pw). */

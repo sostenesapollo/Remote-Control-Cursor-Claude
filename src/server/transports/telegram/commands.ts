@@ -4,6 +4,8 @@ import type { CDPBridge } from '../../cdp-bridge.js';
 import type { TopicManager } from './topic-manager.js';
 import type { MessageTracker } from '../message-tracker.js';
 import type { WindowMonitor } from '../../window-monitor.js';
+import type { ClaudeBridge } from '../../claude-bridge.js';
+import { isClaudeWindowId } from '../../claude-bridge.js';
 import { escapeHtml, formatElement, formatPlanFull, mergeFormattedBlocks, splitMessage } from './formatter.js';
 import type { PlanBlock } from '../../types.js';
 import { cleanTabTitle } from '../../dom-extractor.js';
@@ -24,6 +26,7 @@ export interface CommandDeps {
   setSyncEnabled: (enabled: boolean, chatId?: number) => void;
   setChatId: (id: number) => void;
   resetAllState: () => void;
+  claudeBridge?: ClaudeBridge | null;
 }
 
 export interface RegisterDeps {
@@ -237,7 +240,17 @@ export async function handleSyncAll(ctx: BotContext, deps: CommandDeps): Promise
   });
 }
 
-type SnapshotEntry = { snapshot: { windowId: string; windowTitle: string; messages: import('../../types.js').ChatElement[]; chatTabs?: import('../../types.js').ChatTab[] }; tabTitle: string };
+type SnapshotEntry = {
+  snapshot: {
+    windowId: string;
+    windowTitle: string;
+    messages: import('../../types.js').ChatElement[];
+    chatTabs?: import('../../types.js').ChatTab[];
+    agentStatus?: import('../../types.js').AgentStatus;
+    pendingApprovals?: unknown[];
+  };
+  tabTitle: string;
+};
 
 async function doSyncInBackground(
   api: TelegramApiClient,
@@ -254,12 +267,11 @@ async function doSyncInBackground(
     try {
       await sleep(500);
       const icon = topicIconForSnapshot(
-        snapshot.agentStatus,
+        snapshot.agentStatus ?? 'idle',
         snapshot.pendingApprovals?.length ?? 0
       );
-      // Brand-new topics get the "new" star; ongoing sync of an already-busy
-      // agent uses the live status icon instead.
-      const createIcon = snapshot.agentStatus === 'idle' && !(snapshot.pendingApprovals?.length)
+      // Brand-new topics get the pink "new" circle; busy agents use live status.
+      const createIcon = (snapshot.agentStatus ?? 'idle') === 'idle' && !(snapshot.pendingApprovals?.length)
         ? topicIconForPhase('new')
         : icon;
       const result = await api.createForumTopic(chatId, topicName, {
@@ -395,6 +407,14 @@ export async function handleResync(ctx: BotContext, deps: CommandDeps): Promise<
   const mapping = deps.topicManager.resolveThread(threadId);
   if (!mapping) {
     await ctx.reply('⚠️ This topic isn\'t tracked yet. Run /sync first to create the initial mapping.');
+    return;
+  }
+
+  if (isClaudeTopicMapping(mapping)) {
+    await ctx.reply(
+      'ℹ️ Claude topics are bound by Claude Code session hooks, not Cursor windows. /resync is for Cursor topics only.',
+      { parse_mode: 'HTML' }
+    );
     return;
   }
 
@@ -727,6 +747,15 @@ export async function handleHistory(ctx: BotContext, deps: CommandDeps): Promise
     return;
   }
 
+  if (isClaudeTopicMapping(mapping)) {
+    await ctx.reply(
+      'ℹ️ <b>Claude Code</b> topic — history comes from Claude hooks, not Cursor CDP.\n' +
+      'Watch this topic for notifications and approval buttons.',
+      { parse_mode: 'HTML' }
+    );
+    return;
+  }
+
   let windowTitle = `${mapping.windowTitle} / ${mapping.tabTitle}`;
   let messages: import('../../types.js').ChatElement[] = [];
   let targetWindowId: string | undefined;
@@ -879,12 +908,26 @@ function getThreadIdFromContext(ctx: BotContext): number | undefined {
   return ctx.message?.message_thread_id ?? ctx.callbackQuery?.message?.message_thread_id;
 }
 
+function isClaudeTopicMapping(mapping: { windowId: string; windowTitle?: string }): boolean {
+  return isClaudeWindowId(mapping.windowId) || (mapping.windowTitle?.startsWith('Claude — ') ?? false);
+}
+
 async function ensureTopicWindow(ctx: BotContext, deps: CommandDeps): Promise<boolean> {
   const threadId = getThreadIdFromContext(ctx);
   if (!threadId) return true;
 
   const mapping = deps.topicManager.resolveThread(threadId);
   if (!mapping) return true;
+
+  if (isClaudeTopicMapping(mapping)) {
+    await ctx.reply(
+      'ℹ️ This is a <b>Claude Code</b> topic (not Cursor).\n\n' +
+      'Approvals and status land here automatically.\n' +
+      'Mode/model/tab actions apply to Cursor topics only.',
+      { parse_mode: 'HTML' }
+    );
+    return false;
+  }
 
   const state = deps.stateManager.getCurrentState();
   const currentWin = state.windows.find(w => w.id === state.activeWindowId);
@@ -1112,6 +1155,13 @@ export async function handleCallbackQuery(ctx: BotContext, deps: CommandDeps): P
     return;
   }
 
+  // Claude bridge allow/deny (cla: / cld:) — must run before Cursor action parsing.
+  if (deps.claudeBridge?.isPermissionCallback(data)) {
+    const ok = deps.claudeBridge.handlePermissionCallback(data);
+    await ctx.answerCallbackQuery({ text: ok ? 'Sent to Claude' : 'Expired' });
+    return;
+  }
+
   const { action, id, hash } = parseCallbackData(data);
   const commandId = genId();
 
@@ -1288,6 +1338,17 @@ export async function handleTextMessage(ctx: BotContext, deps: CommandDeps): Pro
   const mapping = deps.topicManager.resolveThread(threadId);
   if (!mapping) {
     await ctx.reply('⚠️ This topic is not mapped. Run /sync to set up.');
+    return;
+  }
+
+  if (isClaudeTopicMapping(mapping)) {
+    if (!deps.claudeBridge) {
+      await ctx.reply('⚠️ Claude bridge offline no relay.');
+      return;
+    }
+    deps.claudeBridge.handleTelegramPrompt(mapping, text).catch((err) => {
+      console.error(`[telegram] Claude prompt failed: ${err instanceof Error ? err.message : err}`);
+    });
     return;
   }
 

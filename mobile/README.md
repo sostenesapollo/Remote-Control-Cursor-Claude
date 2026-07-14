@@ -52,6 +52,23 @@ Or copy the APK to the phone and open it (allow install from unknown sources).
 4. Save → **Cursor** tab
 5. Mac: `claude remote-control` → **Claude** tab
 
+## Claude Code ↔ Telegram (same group as Cursor)
+
+The relay can forward Claude Code sessions into the **same** Telegram forum:
+
+1. Relay running with Telegram `/sync` already done
+2. Hooks auto-installed in `~/.claude/settings.json` (or `npx tsx scripts/install-claude-hooks.ts`)
+3. Run Claude Code normally in a project terminal
+
+You'll get topics like `Claude — <folder>` with:
+
+- Notifications (idle / needs input)
+- Permission Allow/Deny buttons (when Claude asks)
+- Colored circle icons (same palette as Cursor topics)
+- **Send prompts from Telegram** — type in the Claude topic; the relay runs
+  `claude -p --resume <session>` and posts the reply back (Claude Desktop
+  must be logged in on the Mac so auth can be reused)
+
 ## Security
 
 Same rules as the web client: prefer Tailscale, keep a strong password, never expose CDP port `9222`.

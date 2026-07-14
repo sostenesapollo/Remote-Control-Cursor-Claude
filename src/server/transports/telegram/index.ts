@@ -24,18 +24,26 @@ function grammyApiAdapter(bot: Bot): TelegramApiClient {
     sendChatAction: (chatId, action, opts) =>
       bot.api.sendChatAction(chatId, action as 'typing', opts).then(() => {}),
     createForumTopic: (chatId, name, options) => {
-      const opts: { icon_color?: number; icon_custom_emoji_id?: string } = {};
-      if (options?.iconColor != null) opts.icon_color = options.iconColor;
+      const opts: { icon_color?: 7322096 | 16766590 | 13338331 | 9367192 | 16749490 | 16478047; icon_custom_emoji_id?: string } = {};
+      if (options?.iconColor != null) {
+        opts.icon_color = options.iconColor as typeof opts.icon_color;
+      }
       if (options?.iconCustomEmojiId) opts.icon_custom_emoji_id = options.iconCustomEmojiId;
       return bot.api.createForumTopic(chatId, name, opts);
     },
     editForumTopic: (chatId, threadId, options) => {
-      const opts: { name?: string; icon_custom_emoji_id?: string; icon_color?: number } = {};
+      const opts: {
+        name?: string;
+        icon_custom_emoji_id?: string;
+        icon_color?: 7322096 | 16766590 | 13338331 | 9367192 | 16749490 | 16478047;
+      } = {};
       if (options.name != null) opts.name = options.name;
       if (options.iconCustomEmojiId != null) {
         opts.icon_custom_emoji_id = options.iconCustomEmojiId;
       }
-      if (options.iconColor != null) opts.icon_color = options.iconColor;
+      if (options.iconColor != null) {
+        opts.icon_color = options.iconColor as typeof opts.icon_color;
+      }
       return bot.api.editForumTopic(chatId, threadId, opts).then(() => {});
     },
     deleteForumTopic: (chatId, threadId) =>

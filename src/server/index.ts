@@ -12,6 +12,8 @@ import { CloudTunnel } from './cloud-tunnel.js';
 import type { Transport } from './transports/types.js';
 import { TelegramTransport } from './transports/telegram/index.js';
 import { RawTelegramTransport } from './transports/telegram-raw/index.js';
+import { ClaudeBridge } from './claude-bridge.js';
+import { installClaudeHooks } from './claude-hooks-install.js';
 
 const logStream = createWriteStream('./temp/server.log', { flags: 'a' });
 const origLog = console.log;
@@ -150,9 +152,25 @@ async function main(): Promise<void> {
     );
   }
 
-  const relay = new Relay(config, stateManager, commandExecutor, cdpBridge, windowMonitor, cloudTunnel);
+  const claudeBridge =
+    config.claudeBridgeEnabled
+      ? new ClaudeBridge(config.claudePermissionTimeoutMs)
+      : null;
+
+  const relay = new Relay(config, stateManager, commandExecutor, cdpBridge, windowMonitor, cloudTunnel, claudeBridge);
   await relay.start();
   cloudTunnel?.start();
+
+  if (claudeBridge) {
+    try {
+      const hooksUrl = `http://127.0.0.1:${config.serverPort}/api/claude/hooks`;
+      const installed = installClaudeHooks(hooksUrl);
+      console.log(`[main] Claude bridge: ${installed ? 'hooks installed/updated in ~/.claude/settings.json' : 'hooks ready (settings unchanged)'}`);
+      console.log(`[main] Claude hooks URL: ${hooksUrl}/<EventName>`);
+    } catch (err) {
+      console.warn(`[main] Claude hooks install skipped: ${err instanceof Error ? err.message : err}`);
+    }
+  }
 
   console.log('[main] Connecting to Cursor IDE...');
   await cdpBridge.connect();
@@ -169,6 +187,9 @@ async function main(): Promise<void> {
       commandExecutor,
       cdpBridge
     );
+    if (claudeBridge) {
+      telegram.attachClaudeBridge(claudeBridge);
+    }
 
     const names = telegram.registeredUserNames;
     if (names.length > 0) {

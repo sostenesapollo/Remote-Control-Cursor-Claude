@@ -35,6 +35,8 @@ export function loadConfig(): ServerConfig {
       preRegisteredUsers,
       impl: (process.env.TELEGRAM_IMPL === 'raw' ? 'raw' : 'grammy') as 'grammy' | 'raw',
     },
+    claudeBridgeEnabled: process.env.CLAUDE_BRIDGE_ENABLED !== 'false',
+    claudePermissionTimeoutMs: parseInt(process.env.CLAUDE_PERMISSION_TIMEOUT_MS ?? '280000', 10),
     cloudHub: process.env.CLOUD_HUB === 'true',
     cloudHubUrl: (process.env.CLOUD_HUB_URL ?? '').replace(/\/$/, ''),
     cloudPublicUrl: (process.env.CLOUD_PUBLIC_URL ?? process.env.CLOUD_HUB_URL ?? '').replace(/\/$/, ''),
